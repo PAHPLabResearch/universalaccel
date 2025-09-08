@@ -1,7 +1,7 @@
 Package: universalaccel
 Type: Package
 Title: Universal Accelerometry Processing Pipelines (ActiGraph, Axivity, GENEActiv)
-Version: 0.1.2
+Version: 0.3.0
 Authors@R: 
     c(person(given = 'Jimmy',
              family = 'Duhamahoro',
