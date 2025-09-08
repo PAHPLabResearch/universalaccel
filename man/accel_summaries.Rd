@@ -8,42 +8,36 @@ accel_summaries(
   device,
   data_folder,
   output_folder,
-  epochs = 60,
+  epochs = c(60),
   sample_rate = 100,
   dynamic_range = c(-8, 8),
   apply_nonwear = FALSE,
   nonwear_cfg = list(min_bout = 90L, spike_tol = 2L, spike_upper = 100L, flank = 30L),
-  tz = "UTC",
-  debug = TRUE
+  tz = "UTC"
 )
 }
 \arguments{
-\item{device}{One of "actigraph", "axivity", "geneactiv".}
+\item{device}{One of "actigraph", "axivity", or "geneactiv".}
 
-\item{data_folder}{Folder containing raw/native files.}
+\item{data_folder}{Folder containing raw/native files for the device.}
 
 \item{output_folder}{Folder to write per-epoch CSV outputs.}
 
-\item{epochs}{Numeric vector of epoch lengths in seconds.}
+\item{epochs}{Numeric vector of epoch lengths in seconds (e.g., c(1, 60)).}
 
-\item{sample_rate}{Target Hz for loaders needing a regular grid.}
+\item{sample_rate}{Target Hz for loaders that need a grid (default 100).}
 
-\item{dynamic_range}{Length-2 vector in g, e.g., c(-8, 8).}
+\item{dynamic_range}{Numeric length-2 vector in g, e.g., c(-8, 8).}
 
-\item{apply_nonwear}{Logical; if TRUE and epoch == 60 and
-\code{Vector.Magnitude} exists, computes Choi non-wear flags.}
+\item{apply_nonwear}{Logical; if TRUE, apply Choi non-wear when VM exists.}
 
-\item{nonwear_cfg}{List with min_bout, spike_tol, spike_upper, flank.}
+\item{nonwear_cfg}{List of Choi parameters (min_bout, spike_tol, spike_upper, flank).}
 
-\item{tz}{Time zone for time operations.}
-
-\item{debug}{Logical; print per-metric diagnostics before join.}
+\item{tz}{Time zone for all time operations (default "UTC").}
 }
 \value{
-Invisibly, character vector of written file paths.
+(Invisibly) character vector of written file paths.
 }
 \description{
-Computes MIMS, AI, ActiGraph counts (when available), ENMO, MAD, and ROCAM,
-then (optionally) applies Choi non-wear if a per-minute Vector.Magnitude
-column is present (i.e., when epoch = 60s).
+Summarize accelerometer files by device
 }
