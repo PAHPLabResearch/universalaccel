@@ -1,10 +1,10 @@
 # Universal Accel processing config 
 
-# One of: actigraph | axivity | geneactiv 
+# One of: actigraph | axivity | geneactiv (written in lower cases)
 device: actigraph
 
-data_folder: "D:/FLASH/ActiGraph wGT3X-BT/ActiGraph Hip/GT3X"
-output_folder: "C:/Data/Accel/Outputs"
+data_folder: "path"
+output_folder: "path"
 
 # Epochs in seconds
 epochs: [1,5,15, 60]
