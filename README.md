@@ -32,7 +32,7 @@ Axivity (.resampled.csv): assumed calibrated using OMGui software.
 
 Device-agnostic outputs: Consistent per-epoch CSVs across supported devices.
 Transparent + reproducible: Code-driven pipeline, suitable for research and collaboration.
-Non-wear detection: Optional Choi algorithm implementation.
+Non-wear detection: Apply choi algorithm (optional)
 
 
 ## Example Usage ## 
@@ -44,8 +44,7 @@ accel_summaries(
   device = "actigraph",
   data_folder   = system.file("extdata/actigraph", package = "universalaccel"),
   output_folder = tempdir(),
-  epochs        = c(60),
-  apply_nonwear = FALSE
+  epochs        = c(60)
 )
 
 # Example output file

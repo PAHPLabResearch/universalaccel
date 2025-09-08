@@ -8,13 +8,35 @@ accel_summaries(
   device,
   data_folder,
   output_folder,
-  epochs = c(60),
+  epochs = 60,
   sample_rate = 100,
   dynamic_range = c(-8, 8),
   apply_nonwear = FALSE,
   nonwear_cfg = list(min_bout = 90L, spike_tol = 2L, spike_upper = 100L, flank = 30L),
   tz = "UTC"
 )
+}
+\arguments{
+\item{device}{"actigraph", "axivity", or "geneactiv"}
+
+\item{data_folder}{Input folder}
+
+\item{output_folder}{Output folder}
+
+\item{epochs}{Epoch lengths (sec)}
+
+\item{sample_rate}{Target Hz for loaders that align to a grid}
+
+\item{dynamic_range}{c(min, max) in g for MIMS}
+
+\item{apply_nonwear}{If TRUE, apply Choi non-wear when Vector.Magnitude is available}
+
+\item{nonwear_cfg}{List of Choi params (min_bout, spike_tol, spike_upper, flank)}
+
+\item{tz}{Time zone for parsing/output}
+}
+\value{
+Invisibly, vector of written file paths
 }
 \description{
 Summarize accelerometer files by device

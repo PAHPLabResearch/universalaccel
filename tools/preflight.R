@@ -123,7 +123,7 @@ run_one <- function(device, data_dir, pattern, epochs = c(1, 60)) {
     epochs        = c(60),     # or c(1,5,60)
     sample_rate   = 100,       # default; change if you want
     dynamic_range = c(-8, 8),  # default; change if you want
-    
+    apply_nonwear = TRUE
   )
 }
 

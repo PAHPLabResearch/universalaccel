@@ -1,4 +1,4 @@
-# MIT License
+# License
 
 Copyright (c) 2025 Physical Activity Health Promotion Lab  (PAHP) Lab
 

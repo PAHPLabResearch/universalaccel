@@ -12,45 +12,37 @@ calculate_mims <- function(df_cal, file_path, epoch_sec, dynamic_range = c(-8, 8
         output_mims_per_axis = TRUE
       ) %>%
       dplyr::rename(time = HEADER_TIME_STAMP) %>%
-      dplyr::mutate(time = snap_to_epoch(time, epoch_sec), ID = clean_id(file_path))
+      dplyr::mutate(time = snap_to_epoch(time, epoch_sec),
+                    ID   = clean_id(file_path))
   }, error = function(e) NULL)
 }
 
+# STRICT AI: require exactly `sample_rate` samples in each included second
 calculate_ai <- function(df_cal, file_path, epoch_sec, sample_rate = 100) {
   tryCatch({
     message("  [AI] epoch=", epoch_sec, "s")
-    
     df <- df_cal %>%
-      dplyr::mutate(sec = lubridate::floor_date(time, "second")) %>%
-      dplyr::arrange(time)
+      dplyr::rename(Index = time) %>%
+      dplyr::mutate(Index = lubridate::floor_date(Index, "second"))
     
-    n_sec <- df %>% dplyr::count(sec, name = "n")
-    if (!nrow(n_sec)) return(NULL)
-    
-    modal_hz <- as.integer(names(which.max(table(n_sec$n))))
-    if (is.na(modal_hz) || modal_hz <= 0) return(NULL)
-    
-    keep_thr  <- max(1L, floor(0.90 * modal_hz))
-    keep_secs <- n_sec %>% dplyr::filter(n >= keep_thr) %>% dplyr::pull(sec)
-    if (!length(keep_secs)) return(NULL)
-    
-    df_regular <- df %>%
-      dplyr::filter(sec %in% keep_secs) %>%
-      dplyr::group_by(sec) %>%
-      dplyr::slice_head(n = modal_hz) %>%
-      dplyr::ungroup() %>%
-      dplyr::transmute(Index = time, X, Y, Z)
-    
-    if (!nrow(df_regular)) return(NULL)
+    valid_sec <- df %>%
+      dplyr::count(sec = Index, name = "n") %>%
+      dplyr::filter(n == sample_rate) %>%
+      dplyr::pull(sec)
+    if (!length(valid_sec)) return(NULL)
     
     ActivityIndex::computeActivityIndex(
-      df_regular,
-      sigma0 = ActivityIndex::Sigma0(df_regular, hertz = modal_hz),
-      epoch  = epoch_sec,
-      hertz  = modal_hz
+      df %>% dplyr::filter(Index %in% valid_sec),
+      sigma0 = ActivityIndex::Sigma0(
+        df %>% dplyr::filter(Index %in% valid_sec),
+        hertz = sample_rate
+      ),
+      epoch = epoch_sec,
+      hertz = sample_rate
     ) %>%
       dplyr::rename(time = RecordNo) %>%
-      dplyr::mutate(time = snap_to_epoch(time, epoch_sec), ID = clean_id(file_path))
+      dplyr::mutate(time = snap_to_epoch(time, epoch_sec),
+                    ID   = clean_id(file_path))
   }, error = function(e) NULL)
 }
 
@@ -59,11 +51,12 @@ calculate_activity_counts <- function(df_cal, file_path, epoch_sec, sample_rate 
     message("  [COUNTS] epoch=", epoch_sec, "s")
     agcounts::calculate_counts(
       as_activity_df(df_cal, sample_rate = sample_rate),
-      epoch   = as.numeric(epoch_sec),
-      tz      = "UTC",
+      epoch = as.numeric(epoch_sec),
+      tz = "UTC",
       verbose = FALSE
     ) %>%
-      dplyr::mutate(time = snap_to_epoch(time, epoch_sec), ID = clean_id(file_path))
+      dplyr::mutate(time = snap_to_epoch(time, epoch_sec),
+                    ID   = clean_id(file_path))
   }, error = function(e) NULL)
 }
 
@@ -71,10 +64,15 @@ calculate_enmo <- function(df_cal, file_path, epoch_sec) {
   tryCatch({
     message("  [ENMO] 1s -> epoch=", epoch_sec, "s")
     df1s <- df_cal %>%
-      dplyr::mutate(sec = lubridate::floor_date(time, "second"),
-                    mag = sqrt(X^2 + Y^2 + Z^2)) %>%
+      dplyr::mutate(
+        sec = lubridate::floor_date(time, "second"),
+        mag = sqrt(X^2 + Y^2 + Z^2)
+      ) %>%
       dplyr::group_by(sec) %>%
-      dplyr::summarise(ENMO_1s = mean(pmax(mag - 1, 0) * 1000, na.rm = TRUE), .groups = "drop")
+      dplyr::summarise(
+        ENMO_1s = mean(pmax(mag - 1, 0) * 1000, na.rm = TRUE),
+        .groups = "drop"
+      )
     if (!nrow(df1s)) return(NULL)
     
     df1s %>%
@@ -89,10 +87,15 @@ calculate_mad <- function(df_cal, file_path, epoch_sec) {
   tryCatch({
     message("  [MAD] 1s -> epoch=", epoch_sec, "s")
     df1s <- df_cal %>%
-      dplyr::mutate(sec = lubridate::floor_date(time, "second"),
-                    mag = sqrt(X^2 + Y^2 + Z^2)) %>%
+      dplyr::mutate(
+        sec = lubridate::floor_date(time, "second"),
+        mag = sqrt(X^2 + Y^2 + Z^2)
+      ) %>%
       dplyr::group_by(sec) %>%
-      dplyr::summarise(MAD_1s = mean(abs(mag - mean(mag, na.rm = TRUE)) * 1000, na.rm = TRUE), .groups = "drop")
+      dplyr::summarise(
+        MAD_1s = mean(abs(mag - mean(mag, na.rm = TRUE)) * 1000, na.rm = TRUE),
+        .groups = "drop"
+      )
     if (!nrow(df1s)) return(NULL)
     
     df1s %>%
@@ -109,9 +112,11 @@ calculate_rocam <- function(df_cal, file_path, epoch_sec) {
     df1 <- df_cal %>%
       dplyr::arrange(time) %>%
       dplyr::mutate(
-        delta_mag = sqrt((X - dplyr::lag(X))^2 +
-                           (Y - dplyr::lag(Y))^2 +
-                           (Z - dplyr::lag(Z))^2),
+        delta_mag = sqrt(
+          (X - dplyr::lag(X))^2 +
+            (Y - dplyr::lag(Y))^2 +
+            (Z - dplyr::lag(Z))^2
+        ),
         sec = lubridate::floor_date(time, "second")
       ) %>%
       dplyr::filter(!is.na(delta_mag))
@@ -122,7 +127,9 @@ calculate_rocam <- function(df_cal, file_path, epoch_sec) {
       dplyr::summarise(ROCAM_1s = stats::median(delta_mag, na.rm = TRUE) * 1000, .groups = "drop")
     
     rocam_1s %>%
-      dplyr::transmute(time = snap_to_epoch(sec, epoch_sec), ROCAM = ROCAM_1s, ID = clean_id(file_path)) %>%
+      dplyr::transmute(time = snap_to_epoch(sec, epoch_sec),
+                       ROCAM = ROCAM_1s,
+                       ID    = clean_id(file_path)) %>%
       dplyr::group_by(time, ID) %>%
       dplyr::summarise(ROCAM = mean(ROCAM, na.rm = TRUE), .groups = "drop")
   }, error = function(e) NULL)
