@@ -45,6 +45,9 @@ accel_summaries(
   data_folder   = system.file("extdata/actigraph", package = "universalaccel"),
   output_folder = tempdir(),
   epochs        = c(60)
+  sample_rate   = 100,       # override if your Axivity sample rate differs
+  dynamic_range = c(-8, 8),  # override if you recorded at ±2g, ±4g, etc.
+  apply_nonwear =   TRUE
 )
 
 # Example output file

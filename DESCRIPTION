@@ -1,42 +1,37 @@
 Package: universalaccel
 Type: Package
-Title: Universal Accelerometry Processing Pipelines (ActiGraph, Axivity, GENEActiv)
-Version: 0.3.0
-Authors@R: 
-    c(person(given = 'Jimmy',
-             family = 'Duhamahoro',
-             role = c('aut', 'cre'),
-             email = 'dhrjimmy1@gmail.com'))
-Description: Unified, device-aware pipelines to load, calibrate, epoch, and compute common summary metrics (MIMS, AI, ENMO, MAD, ROCAM) from ActiGraph, Axivity, and GENEActiv devices. Includes optional non-wear detection and a universal driver.
-License: MIT + file LICENSE.md
+Title: Universal Accelerometer Summary Metrics
+Version: 0.2.0
+Authors@R:
+    person("Jimmy Duhamahoro", email = "jimmydhr1@gmail.com", role = c("aut", "cre"))
+Description: Reproducible pipeline to load, calibrate, and summarize raw accelerometer data
+    from ActiGraph, Axivity, and GENEActiv. Computes MIMS, Activity Index (AI), ENMO,
+    MAD, ROCAM, and ActiGraph activity counts with optional Choi non-wear flags.
+License: MIT + file LICENSE
 Encoding: UTF-8
 LazyData: true
-Depends: R (>= 4.1)
-Imports:
-    dplyr,
-    tidyr,
-    readr,
-    lubridate,
-    MIMSunit,
-    agcounts,
-    ActivityIndex,
-    zoo,
-    tibble,
-    read.gt3x,
-    GENEAread,
-    stringr,
-    data.table
-Suggests:
-    devtools,
-    testthat (>= 3.0.0),
-    rcmdcheck,
-    lintr,
-    fs,
-    yaml,
-    cli,
-    glue,
-    knitr,
-    rmarkdown
-Config/testthat/edition: 3
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
+Depends: 
+    R (>= 4.0)
+Imports:
+    dplyr,
+    tibble,
+    readr,
+    lubridate,
+    purrr,
+    stats,
+    MIMSunit,
+    ActivityIndex,
+    agcounts,
+    GENEAread,
+    GGIR
+Suggests:
+    cli,
+    fs,
+    glue,
+    testthat (>= 3.0.0),
+    devtools,
+    rcmdcheck,
+    yaml
+Config/testthat/edition: 3
