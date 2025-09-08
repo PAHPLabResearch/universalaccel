@@ -1,0 +1,26 @@
+# Universal Accel processing config 
+
+# One of: actigraph | axivity | geneactiv 
+device: actigraph
+
+data_folder: "D:/FLASH/ActiGraph wGT3X-BT/ActiGraph Hip/GT3X"
+output_folder: "C:/Data/Accel/Outputs"
+
+# Epochs in seconds
+epochs: [1,5,15, 60]
+
+# If null, loaders infer Hz from timestamps; otherwise force a value
+sample_rate: 100
+
+# For MIMS; set per device if needed (e.g., axivity often uses ±2g, ±4g, ...)
+dynamic_range: [-8, 8]
+
+apply_nonwear: TRUE # Choi Algorithm
+nonwear:
+  min_bout: 90        # minutes of 0s
+  spike_tol: 2        # allowed spikes
+  spike_upper: 100    # spikes 1..100 CPM
+  flank: 30           # 30 zero-min either side
+
+# Timestamps output TZ
+tz: "UTC"
