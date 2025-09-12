@@ -2,42 +2,40 @@
 % Please edit documentation in R/driver.R
 \name{accel_summaries}
 \alias{accel_summaries}
-\title{Summarize accelerometer files by device}
+\title{Summarize accelerometer files by device (selectable metrics; classic filenames)}
 \usage{
 accel_summaries(
   device,
   data_folder,
   output_folder,
-  epochs = c(60),
+  epochs = 60,
   sample_rate = 100,
   dynamic_range = c(-8, 8),
   apply_nonwear = FALSE,
-  nonwear_cfg = list(min_bout = 90L, spike_tol = 2L, spike_upper = 100L, flank = 30L),
+  metrics = c("MIMS", "AI", "COUNTS", "ENMO", "MAD", "ROCAM"),
   tz = "UTC"
 )
 }
 \arguments{
-\item{device}{One of "actigraph", "axivity", or "geneactiv".}
+\item{device}{"actigraph", "axivity", or "geneactiv"}
 
-\item{data_folder}{Folder containing raw/native files for the device.}
+\item{data_folder}{Input folder of native files}
 
-\item{output_folder}{Folder to write per-epoch CSV outputs.}
+\item{output_folder}{Output folder for CSVs}
 
-\item{epochs}{Numeric vector of epoch lengths in seconds (e.g., c(1, 60)).}
+\item{epochs}{Numeric vector of epoch lengths in seconds}
 
-\item{sample_rate}{Target Hz for loaders that need a grid (default 100).}
+\item{sample_rate}{Target Hz for loaders that need a grid}
 
-\item{dynamic_range}{Numeric length-2 vector in g, e.g., c(-8, 8).}
+\item{dynamic_range}{g-range for MIMS (length-2, e.g., c(-8, 8))}
 
-\item{apply_nonwear}{Logical; if TRUE, apply Choi non-wear when VM exists.}
+\item{apply_nonwear}{Logical; if TRUE, derive Choi flags from minute VM (when available)}
 
-\item{nonwear_cfg}{List of Choi parameters (min_bout, spike_tol, spike_upper, flank).}
+\item{metrics}{Character vector of metrics to compute. Any of:
+c("MIMS","AI","COUNTS","ENMO","MAD","ROCAM"). Defaults to all.}
 
-\item{tz}{Time zone for all time operations (default "UTC").}
-}
-\value{
-(Invisibly) character vector of written file paths.
+\item{tz}{Timezone for timestamps (passed to loaders)}
 }
 \description{
-Summarize accelerometer files by device
+Summarize accelerometer files by device (selectable metrics; classic filenames)
 }
