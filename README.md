@@ -18,10 +18,10 @@ It supports **ActiGraph, Axivity, and GENEActiv** formats, with validated implem
 
 ```r
 # Install from GitHub
-remotes::install_github("jimmydhr/universal-accel")
+remotes::install_github("jimmydhr/universalaccel")
 
 # Run the pipeline with a config file
-Rscript inst/cli/accel.summaries.R --config config.yml
+Rscript inst/cli/accel_summaries.R --config config.yml
 
 #Calibration Notes
 ActiGraph (.gt3x): processed using agcalibrate.
@@ -53,6 +53,15 @@ accel_summaries(
 # Example output file
 list.files(tempdir(), pattern = "univ_actigraph", full.names = TRUE)
 This produces a CSV (e.g., univ_actigraph_epoch60s_YYYY-MM-DD.csv) containing synchronized MIMS, AI, AC, ENMO, MAD, and ROCAM metrics.
+
+
+## Shiny App
+
+You can launch the example Shiny app included in this package after installation:
+
+shiny::runApp(system.file("shiny/calibrateddata", package = "universalaccel"))
+
+<https://Accel_Summaries_PAHPLab.shinyapps.io/accelerationsummaries/>
 
 📚 References & Citations
 

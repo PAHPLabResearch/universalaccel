@@ -51,6 +51,7 @@ if (identical(data_file, "") || !file.exists(data_file)) {
   data_file <- "devicefinaldataday.csv"  # works when you run from inst/shiny/calibrateddata
 }
 DF_DAY <- readr::read_csv(data_file, show_col_types = FALSE)
+DF_DAY_PUBLIC <- public_subset(DF_DAY) 
 
 # -------------------------------
 # Metric lists & helpers
@@ -367,7 +368,8 @@ ui <- page_fluid(
     ),
     navset_card_pill(
       nav_panel("Overview",
-                p("This app provides graphical results from a temporally matched evaluation of acceleration metrics."),
+                p("This app provides graphical results agreement of acceleration summary metrics from research-grade activity trackers."),
+                p("The evaluation used three devices; ActiGraph, Axivity, and GENEActiv with the ActiGraph serving as the reference in most comparison"),
                 p("All figures are computed from a day-level dataset (see the Data tab).")
       ),
       nav_panel("Bland–Altman (All six metrics)",
