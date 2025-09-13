@@ -5,3 +5,4 @@ if (requireNamespace("renv", quietly = TRUE)) {
   install.packages("renv")
   renv::activate()
 }
+options(devtools.roclets = c("rd", "namespace", "collate"))
