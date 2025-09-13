@@ -45,14 +45,14 @@ accel_summaries(
   data_folder   = system.file("extdata/actigraph", package = "universalaccel"),
   output_folder = tempdir(),
   epochs        = c(60)
-  sample_rate   = 100,       # override if your sample rate differs
-  dynamic_range = c(-8, 8),  # override if you recorded at ±2g, ±4g, etc.
+  sample_rate   = 100,       # override if a sampling rate differs
+  dynamic_range = c(-8, 8),  # override if the dynamic range is different.
   apply_nonwear =   TRUE
 )
 # Other configurations
 selectable Metrics with argument: metrics = c("MIMS","AI","COUNTS","ENMO","MAD","ROCAM"),
 change timezone with  tz = "UTC")
-Selectable epochs; typically in eg. (1s) 
+Selectable epochs 
 
 # Example output file
 list.files(tempdir(), pattern = "univ_actigraph", full.names = TRUE)
