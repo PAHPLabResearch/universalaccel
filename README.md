@@ -14,13 +14,13 @@
 
 ```r
 install.packages("remotes")
-remotes::install_github("JimmyDhr/universalaccel")
+remotes::install_github("PAHPLabResearch/universalaccel")
 ```
 
 ## 📖 Learn More
-• Getting Started Vignette
-• Shiny App Demo
 • `?accel_summaries()` for function-level help
+• Shiny App Demo https://pahplab.shinyapps.io/Raw_Acceleration_Summary_Metrics/
+
 
 ## 🧪 Developer Tools
 Run "source("tools/preflight.R")" to validate package structure and sample data.

@@ -1,5 +1,6 @@
 ^renv$
 ^renv\.lock$
+^renv/library$
 ^LICENSE\.md$
 ^config\.yml$
 ^\.github$
@@ -10,4 +11,5 @@
 ^data-raw$
 ^vignettes$
 ^inst/doc$
+
 

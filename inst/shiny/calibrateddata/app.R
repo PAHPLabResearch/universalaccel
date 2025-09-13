@@ -18,7 +18,7 @@ suppressPackageStartupMessages({
   library(equivalence)
   library(officer)
   library(flextable)
-  
+
 })
 
 # ---------------------------------
@@ -48,10 +48,10 @@ public_subset <- function(df, id_col = guess_id_col(df)) {
 data_file <- system.file("shiny/calibrateddata/devicefinaldataday.csv",
                          package = "universalaccel")
 if (identical(data_file, "") || !file.exists(data_file)) {
-  data_file <- "devicefinaldataday.csv"  
+  data_file <- "devicefinaldataday.csv"
 }
 DF_DAY <- readr::read_csv(data_file, show_col_types = FALSE)
-DF_DAY_PUBLIC <- public_subset(DF_DAY) 
+DF_DAY_PUBLIC <- public_subset(DF_DAY)
 
 # -------------------------------
 # Metric lists & helpers
@@ -224,7 +224,7 @@ corr_tile <- function(df, title_text) {
   ag_cols    <- grep("^AG_", names(df), value = TRUE)
   other_cols <- grep("^(AX|GA)_", names(df), value = TRUE)
   if (!length(ag_cols) || !length(other_cols)) return(NULL)
-  
+
   pairs <- tidyr::expand_grid(Y = ag_cols, X = other_cols) %>%
     rowwise() %>%
     mutate(r = suppressWarnings(cor(df[[X]], df[[Y]], use = "pairwise.complete.obs", method = "pearson"))) %>%
@@ -233,7 +233,7 @@ corr_tile <- function(df, title_text) {
       X = factor(X, levels = unique(other_cols)),
       Y = factor(Y, levels = rev(unique(ag_cols)))
     )
-  
+
   ggplot(pairs, aes(x = X, y = Y, fill = r)) +
     geom_tile(color = "white") +
     geom_text(aes(label = sprintf("%.2f", r)), size = 4.5) +
@@ -367,10 +367,19 @@ ui <- page_fluid(
       downloadButton("dl_eq_docx",  "Download Equivalence Results (DOCX)")
     ),
     navset_card_pill(
-      nav_panel("Overview",
-                p("This app provides graphical results agreement of acceleration summary metrics from research-grade activity trackers."),
-                p("The evaluation used three devices; ActiGraph, Axivity, and GENEActiv with the ActiGraph as the reference in most comparisons"),
-                p("All figures are computed from a day-level dataset (see the Data tab).")
+      tabPanel("Overview",
+               p("This app provides graphical comparisons of acceleration summary metrics derived from research-grade activity trackers."),
+               p("The evaluation includes three devices: ActiGraph, Axivity, and GENEActiv, with ActiGraph serving as the reference in most comparisons."),
+               p("All figures are computed from a day-level dataset (see the Data tab)."),
+               tags$h4("Acceleration Summary Metrics"),
+               tags$ul(
+                 tags$li("AC = Activity Counts"),
+                 tags$li("AI = Activity Index"),
+                 tags$li("ENMO = Euclidean Norm Minus One"),
+                 tags$li("MAD = Mean Amplitude Deviation"),
+                 tags$li("MIMS = Monitor-Independent Movement Summary Unit"),
+                 tags$li("ROCAM = Rate of Change of Acceleration Magnitude")
+               )
       ),
       nav_panel("Bland–Altman (All six metrics)",
                 card(card_header("Plot"), plotOutput("ba_all_plot", height = 1650))
@@ -425,7 +434,7 @@ server <- function(input, output, session) {
       dev.off()
     }
   )
-  
+
   # ---------------- MAPE ----------------
   totals_df <- reactive({ compute_total_mape_from_day(DF_DAY) })
   output$mape_plot <- renderPlot({
@@ -438,7 +447,7 @@ server <- function(input, output, session) {
       group_by(Metric) %>%
       summarise(Total_MAPE = mean(Total_MAPE, na.rm = TRUE),
                 SD_MAPE    = mean(SD_MAPE,    na.rm = TRUE), .groups = "drop")
-    
+
     ggplot(mape_total_avg, aes(x = Metric, y = Total_MAPE, fill = Metric)) +
       geom_col(width = 0.6, color = "gray30") +
       geom_errorbar(aes(ymin = Total_MAPE, ymax = pmin(100, Total_MAPE + SD_MAPE)),
@@ -463,7 +472,7 @@ server <- function(input, output, session) {
         group_by(Metric) %>%
         summarise(Total_MAPE = mean(Total_MAPE, na.rm = TRUE),
                   SD_MAPE    = mean(SD_MAPE,    na.rm = TRUE), .groups = "drop")
-      
+
       p <- ggplot(mape_total_avg, aes(x = Metric, y = Total_MAPE, fill = Metric)) +
         geom_col(width = 0.6, color = "gray30") +
         geom_errorbar(aes(ymin = Total_MAPE, ymax = pmin(100, Total_MAPE + SD_MAPE)),
@@ -475,7 +484,7 @@ server <- function(input, output, session) {
       ggsave(file, plot = p, width = 8, height = 6, dpi = 300, device = cairo_pdf)
     }
   )
-  
+
   # ---------------- Correlation ----------------
   output$corr_plot <- renderPlot({ corr_four_panel(DF_DAY) })
   output$dl_corr_pdf <- downloadHandler(
@@ -486,7 +495,7 @@ server <- function(input, output, session) {
       dev.off()
     }
   )
-  
+
   # ---------------- Equivalence (TOST) ----------------
   eq_results <- reactive({ run_tost_all(DF_DAY, all_pairs, eps_pct = input$epsilon) })
   output$eq_table <- renderDT({
@@ -514,7 +523,7 @@ server <- function(input, output, session) {
       print(doc, target = file)
     }
   )
-  
+
   # ---------------- Data Tab (PUBLIC VIEW) ----------------
   output$day_table <- renderDT({
     datatable(DF_DAY_PUBLIC, options = list(pageLength = 10, scrollX = TRUE))

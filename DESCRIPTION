@@ -3,7 +3,7 @@ Type: Package
 Title: Universal Accelerometer Summary Metrics
 Version: 0.1.1
 Authors@R:
-    person("Jimmy Duhamahoro", email = "jimmydhr1@gmail.com", role = c("aut", "cre"))
+    person("Jimmy Duhamahoro", email = "jduhamah@iastate.edu", role = c("aut", "cre"))
 Description: Reproducible pipeline to load, calibrate, and summarize raw accelerometer data
     from ActiGraph, Axivity, and GENEActiv. Computes MIMS, Activity Index (AI), ENMO,
     MAD, ROCAM, and ActiGraph activity counts with optional Choi non-wear flags.
