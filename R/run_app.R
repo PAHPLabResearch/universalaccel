@@ -15,7 +15,7 @@ run_calibrated_data_app <- function() {
   }
   
   # look for the installed app directory
-  app_dir <- system.file("shiny/calibrateddata", package = "universalaccel")
+  app_dir <- system.file("inst/shiny/calibrateddata", package = "universalaccel")
   if (!nzchar(app_dir) || !dir.exists(app_dir)) {
     stop(
       "Shiny app directory not found in installed package.\n",
