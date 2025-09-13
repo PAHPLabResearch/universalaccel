@@ -1,7 +1,7 @@
 Package: universalaccel
 Type: Package
 Title: Universal Accelerometer Summary Metrics
-Version: 0.2.0
+Version: 0.1.1
 Authors@R:
     person("Jimmy Duhamahoro", email = "jimmydhr1@gmail.com", role = c("aut", "cre"))
 Description: Reproducible pipeline to load, calibrate, and summarize raw accelerometer data
@@ -47,5 +47,5 @@ Suggests:
     glue,
     knitr,
     rmarkdown
-Config/testthat/edition: 3
 VignetteBuilder: knitr
+Config/testthat/edition: 3
