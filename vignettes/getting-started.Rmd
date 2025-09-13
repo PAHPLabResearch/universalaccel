@@ -17,7 +17,7 @@ knitr::opts_chunk$set(
 library(universalaccel)
 ```
 
-# 📦 Overview
+## 📦 Overview
 universalaccel provides a unified R pipeline for computing summary metrics from raw accelerometer data across ActiGraph, Axivity, and GENEActiv devices. It supports reproducible workflows with harmonized outputs and validated implementations of key metrics:
 
 - ENMO (Euclidean Norm Minus One)
@@ -29,18 +29,18 @@ universalaccel provides a unified R pipeline for computing summary metrics from 
 
 This vignette walks through a minimal example using built-in sample data.
 
-# 🚀 Quick Start
+## 🚀 Quick Start
 We’ll run ```accel_summaries()``` on a sample ActiGraph file included with the package.
 
-# Locate sample data
+## Locate sample data
 ```
 actigraph_path <- system.file("extdata/actigraph", package = "universalaccel")
 list.files(actigraph_path)
 
-# Define output directory
+## Define output directory
 output_dir <- tempdir()
 
-# Run the pipeline
+## Run the pipeline
 accel_summaries(
   device        = "actigraph",
   data_folder   = actigraph_path,
@@ -53,7 +53,7 @@ accel_summaries(
 ```
 
 
-# 📁 Inspect Output
+## 📁 Inspect Output
 ```
 # List generated CSVs
 list.files(output_dir, pattern = "univ_actigraph", full.names = TRUE)
@@ -65,7 +65,7 @@ readr::read_csv(list.files(output_dir, pattern = "univ_actigraph", full.names = 
 # Each row represents a 60-second epoch with synchronized metrics across axes and algorithms.
 ```
 
-# 🧪 Other Devices
+## 🧪 Other Devices
 To process GENEActiv or Axivity data, change the device and data_folder arguments:
 ```
 # GENEActiv
@@ -84,7 +84,7 @@ accel_summaries(
 ```
 
 
-# ⚙️ Customization
+## ⚙️ Customization
 You can customize:
 
 - Epoch lengths: epochs = c(1, 5, 60)
@@ -103,7 +103,7 @@ accel_summaries(
 ```
 
 
-# 🖥️ Shiny App
+#3 🖥️ Shiny App
 Explore calibrated data interactively:
 ```
 run_calibrated_data_app()
@@ -116,7 +116,7 @@ Rscript inst/cli/accel_summaries.R --config config.yml
 ```
 
 
-# 🧪 Developer Preflight
+## 🧪 Developer Preflight
 To validate package structure and functionality, run:
 ```
 source("tools/preflight.R")
@@ -129,9 +129,9 @@ This script checks:
 - Sample data integrity
 - End-to-end metric runs
 
-# 📚 References
+## 📚 References
 See the README and ?universalaccel() for citations and licensing.
 
-# ✅ Summary
+## ✅ Summary
 universalaccel is designed for reproducible, device-agnostic accelerometry workflows. Whether you're analyzing physical activity, building harmonization pipelines, or exploring metrics interactively, this package provides a robust foundation.
 

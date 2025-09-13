@@ -17,13 +17,13 @@ install.packages("remotes")
 remotes::install_github("JimmyDhr/universalaccel")
 ```
 
-# 📖 Learn More
+## 📖 Learn More
 • Getting Started Vignette
 • Shiny App Demo
 • `?accel_summaries()` for function-level help
 
-# 🧪 Developer Tools
+## 🧪 Developer Tools
 Run "source("tools/preflight.R")" to validate package structure and sample data.
 
-# 📜 License & Citations
+## 📜 License & Citations
 See Licence.md and inst/CITATION for usage and attribution.
