@@ -6,7 +6,6 @@
 
 - ENMO, MAD, AI, MIMS-unit, ROCAM, and Activity Counts
 - Device-specific calibration and non-wear detection
-- CLI and Shiny app interfaces for flexible deployment
 
 ---
 
