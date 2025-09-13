@@ -9,10 +9,10 @@ Description: Reproducible pipeline to load, calibrate, and summarize raw acceler
     MAD, ROCAM, and ActiGraph activity counts with optional Choi non-wear flags.
 License: MIT + file LICENSE
 Encoding: UTF-8
-LazyData: true
+LazyData: false
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
-Depends: 
+Depends:
     R (>= 4.0)
 Imports:
     dplyr,
@@ -25,11 +25,21 @@ Imports:
     ActivityIndex,
     agcounts,
     GENEAread,
-    GGIR
-Suggests:
+    GGIR,
     cli,
     fs,
-    glue,
+    glue
+Suggests:
+    shiny,
+    bslib,
+    DT,
+    ggplot2,
+    scales,
+    gridExtra,
+    equivalence,
+    officer,
+    flextable,
+    base64enc,
     testthat (>= 3.0.0),
     devtools,
     rcmdcheck,
