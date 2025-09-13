@@ -369,7 +369,7 @@ ui <- page_fluid(
     navset_card_pill(
       nav_panel("Overview",
                 p("This app provides graphical results agreement of acceleration summary metrics from research-grade activity trackers."),
-                p("The evaluation used three devices; ActiGraph, Axivity, and GENEActiv with the ActiGraph serving as the reference in most comparison"),
+                p("The evaluation used three devices; ActiGraph, Axivity, and GENEActiv with the ActiGraph as the reference in most comparisons"),
                 p("All figures are computed from a day-level dataset (see the Data tab).")
       ),
       nav_panel("Bland–Altman (All six metrics)",

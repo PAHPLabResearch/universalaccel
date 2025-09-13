@@ -18,7 +18,7 @@ read_and_calibrate_geneactiv <- function(file_path,
   # ---- FAST PATH for tiny demo files: skip recalibration, just read.bin() ----
   if (!is.na(size_mb) && size_mb < 1) {
     if (verbose) message("[GENEA] demo-sized file (", sprintf("%.1f MB", size_mb),
-                         ") → skipping recalibration; using header calibration only")
+                         ") -> skipping recalibration; using header calibration only")
     bin <- GENEAread::read.bin(file_path, calibrate = use_header_cal, verbose = FALSE)
     return(.genea_bin_to_tbl(bin, sample_rate, tz))
   }

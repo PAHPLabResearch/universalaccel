@@ -1,6 +1,6 @@
-# License
+# MIT License
 
-Copyright (c) 2025 Physical Activity Health Promotion Lab  (PAHP) Lab
+Copyright (c) 2025 PAHP Lab
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

@@ -1,3 +1,4 @@
+#' Launch the packaged Shiny app
 #' @export
 run_calibrated_data_app <- function() {
   app_pkgs <- c(
@@ -6,22 +7,24 @@ run_calibrated_data_app <- function() {
     "officer", "flextable", "base64enc"
   )
   
-  # install any missing app packages
+  # install any missing dependencies for the app
   missing <- app_pkgs[!vapply(app_pkgs, requireNamespace, quietly = TRUE, FUN.VALUE = logical(1))]
   if (length(missing)) {
     message("Installing missing app dependencies: ", paste(missing, collapse = ", "))
     install.packages(missing)
   }
   
-  app_dir <- system.file("shiny", "calibrateddata", package = "universalaccel")
+  # look for the installed app directory
+  app_dir <- system.file("shiny/calibrateddata", package = "universalaccel")
   if (!nzchar(app_dir) || !dir.exists(app_dir)) {
     stop(
       "Shiny app directory not found in installed package.\n",
       "Expected at: inst/shiny/calibrateddata\n",
-      "Reinstall the package and ensure the 'inst/' folder is included.\n",
+      "Reinstall the package and ensure the 'inst/shiny/calibrateddata' folder is included.",
       call. = FALSE
     )
   }
   
   shiny::runApp(app_dir, display.mode = "normal")
 }
+

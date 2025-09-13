@@ -1,8 +1,13 @@
 ^renv$
 ^renv\.lock$
 ^LICENSE\.md$
-^inst$
 ^config\.yml$
 ^\.github$
 ^.*\.Rproj$
 ^\.Rproj\.user$
+^\.Rprofile$
+^universalaccel\.Rproj$
+^data-raw$
+^vignettes$
+^inst/doc$
+
