@@ -1,4 +1,4 @@
-#' Read Axivity resampled CSV (already calibrated), align grid
+#' Read Axivity resampled CSV (already calibrated)
 #' @noRd
 read_and_calibrate_axivity <- function(file_path, sample_rate = 100, tz = "UTC") {
   df <- read.csv(file_path, header = TRUE) |>

@@ -40,7 +40,7 @@ Suggests:
     officer,
     flextable,
     base64enc,
-    testthat (>= 3.0.0),
+    testthat,
     devtools,
     rcmdcheck,
     yaml

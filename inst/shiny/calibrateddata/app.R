@@ -394,9 +394,7 @@ ui <- page_fluid(
       nav_panel("Data",
                 card(
                   card_header("devicefinaldataday"),
-                  p("This public extract shows only rows with IDs starting ",
-                    tags$code("F3BA"), " or ", tags$code("FL4"),
-                    ". Rows with restricted IDs (e.g., starting ", tags$code("F3B"), ") are hidden."),# FOR IRB reasons earlier IDs did not concent to share their data on Github.
+                  p("This extract shows only a few rows for demonstration "),
                   div(style = "display:flex; gap:8px; margin-bottom:8px;",
                       downloadButton("dl_data_csv", "Download CSV (public)"),
                       downloadButton("dl_data_rds", "Download RDS (public)")

@@ -1,4 +1,4 @@
-#' Read + calibrate ActiGraph GT3X with GGIR C++ core
+#' Read + calibrate ActiGraph GT3X with GGIR C++ core (in agcalibrate)
 #' @noRd
 read_and_calibrate_actigraph <- function(file_path, sample_rate = 100, tz = "UTC") {
   raw <- read.gt3x::read.gt3x(file_path, asDataFrame = TRUE, imputeZeroes = FALSE)

@@ -15,7 +15,7 @@ compute_choi_nonwear_minutes <- function(data,
                                          flank = 30L) {
   
   df <- data %>%
-    select(all_of(c(id_col, time_col, cpm_col))) %>%
+    dplyr::select(all_of(c(id_col, time_col, cpm_col))) %>%
     arrange(.data[[id_col]], .data[[time_col]]) %>%
     rename(ID__   = !!id_col,
            TIME__ = !!time_col,
@@ -55,7 +55,7 @@ compute_choi_nonwear_minutes <- function(data,
     group_by(ID__) %>%
     group_modify(~ mutate(.x, choi_nonwear = mark_id(.x))) %>%
     ungroup() %>%
-    select(ID__, TIME__, choi_nonwear)
+    dplyr::select(ID__, TIME__, choi_nonwear)
   
   out %>%
     rename(!!id_col := ID__, !!time_col := TIME__)
