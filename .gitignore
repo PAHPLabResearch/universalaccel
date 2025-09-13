@@ -8,3 +8,4 @@
 *.csv
 data-raw/
 notes/
+inst/doc

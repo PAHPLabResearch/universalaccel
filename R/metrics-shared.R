@@ -1,3 +1,4 @@
+#' @export
 # ============================== METRICS ==============================
 
 calculate_mims <- function(df_cal, file_path, epoch_sec, dynamic_range = c(-8, 8)) {
@@ -17,6 +18,7 @@ calculate_mims <- function(df_cal, file_path, epoch_sec, dynamic_range = c(-8, 8
   }, error = function(e) NULL)
 }
 
+#' @export
 # STRICT AI: require exactly `sample_rate` samples in each included second
 calculate_ai <- function(df_cal, file_path, epoch_sec, sample_rate = 100) {
   tryCatch({
@@ -24,13 +26,13 @@ calculate_ai <- function(df_cal, file_path, epoch_sec, sample_rate = 100) {
     df <- df_cal %>%
       dplyr::rename(Index = time) %>%
       dplyr::mutate(Index = lubridate::floor_date(Index, "second"))
-    
+
     valid_sec <- df %>%
       dplyr::count(sec = Index, name = "n") %>%
       dplyr::filter(n == sample_rate) %>%
       dplyr::pull(sec)
     if (!length(valid_sec)) return(NULL)
-    
+
     ActivityIndex::computeActivityIndex(
       df %>% dplyr::filter(Index %in% valid_sec),
       sigma0 = ActivityIndex::Sigma0(
@@ -45,7 +47,7 @@ calculate_ai <- function(df_cal, file_path, epoch_sec, sample_rate = 100) {
                     ID   = clean_id(file_path))
   }, error = function(e) NULL)
 }
-
+#' @export
 calculate_activity_counts <- function(df_cal, file_path, epoch_sec, sample_rate = 100) {
   tryCatch({
     message("  [COUNTS] epoch=", epoch_sec, "s")
@@ -59,7 +61,7 @@ calculate_activity_counts <- function(df_cal, file_path, epoch_sec, sample_rate 
                     ID   = clean_id(file_path))
   }, error = function(e) NULL)
 }
-
+#' @export
 calculate_enmo <- function(df_cal, file_path, epoch_sec) {
   tryCatch({
     message("  [ENMO] 1s -> epoch=", epoch_sec, "s")
@@ -74,7 +76,7 @@ calculate_enmo <- function(df_cal, file_path, epoch_sec) {
         .groups = "drop"
       )
     if (!nrow(df1s)) return(NULL)
-    
+
     df1s %>%
       dplyr::mutate(time = snap_to_epoch(sec, epoch_sec)) %>%
       dplyr::group_by(time) %>%
@@ -82,7 +84,7 @@ calculate_enmo <- function(df_cal, file_path, epoch_sec) {
       dplyr::mutate(ID = clean_id(file_path))
   }, error = function(e) NULL)
 }
-
+#' @export
 calculate_mad <- function(df_cal, file_path, epoch_sec) {
   tryCatch({
     message("  [MAD] 1s -> epoch=", epoch_sec, "s")
@@ -97,7 +99,7 @@ calculate_mad <- function(df_cal, file_path, epoch_sec) {
         .groups = "drop"
       )
     if (!nrow(df1s)) return(NULL)
-    
+
     df1s %>%
       dplyr::mutate(time = snap_to_epoch(sec, epoch_sec)) %>%
       dplyr::group_by(time) %>%
@@ -105,7 +107,7 @@ calculate_mad <- function(df_cal, file_path, epoch_sec) {
       dplyr::mutate(ID = clean_id(file_path))
   }, error = function(e) NULL)
 }
-
+#' @export
 calculate_rocam <- function(df_cal, file_path, epoch_sec) {
   tryCatch({
     message("  [ROCAM] epoch=", epoch_sec, "s")
@@ -121,11 +123,11 @@ calculate_rocam <- function(df_cal, file_path, epoch_sec) {
       ) %>%
       dplyr::filter(!is.na(delta_mag))
     if (!nrow(df1)) return(NULL)
-    
+
     rocam_1s <- df1 %>%
       dplyr::group_by(sec) %>%
       dplyr::summarise(ROCAM_1s = stats::median(delta_mag, na.rm = TRUE) * 1000, .groups = "drop")
-    
+
     rocam_1s %>%
       dplyr::transmute(time = snap_to_epoch(sec, epoch_sec),
                        ROCAM = ROCAM_1s,

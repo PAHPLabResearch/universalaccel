@@ -1,0 +1,137 @@
+---
+title: "Getting Started with universalaccel"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting Started with universalaccel}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+
+
+library(universalaccel)
+```
+
+# 📦 Overview
+universalaccel provides a unified R pipeline for computing summary metrics from raw accelerometer data across ActiGraph, Axivity, and GENEActiv devices. It supports reproducible workflows with harmonized outputs and validated implementations of key metrics:
+
+- ENMO (Euclidean Norm Minus One)
+- MAD (Mean Amplitude Deviation)
+- AI (Activity Index)
+- MIMS-unit (Monitor-Independent Movement Summary)
+- ROCAM (Rate of Change of Acceleration Magnitude)
+- Counts (Activity Counts)
+
+This vignette walks through a minimal example using built-in sample data.
+
+# 🚀 Quick Start
+We’ll run ```accel_summaries()``` on a sample ActiGraph file included with the package.
+
+# Locate sample data
+```
+actigraph_path <- system.file("extdata/actigraph", package = "universalaccel")
+list.files(actigraph_path)
+
+# Define output directory
+output_dir <- tempdir()
+
+# Run the pipeline
+accel_summaries(
+  device        = "actigraph",
+  data_folder   = actigraph_path,
+  output_folder = output_dir,
+  epochs        = 60,
+  sample_rate   = 100,
+  dynamic_range = c(-8, 8),
+  apply_nonwear = TRUE
+)
+```
+
+
+# 📁 Inspect Output
+```
+# List generated CSVs
+list.files(output_dir, pattern = "univ_actigraph", full.names = TRUE)
+
+
+# Preview the first few rows
+readr::read_csv(list.files(output_dir, pattern = "univ_actigraph", full.names = TRUE)[1], n_max = 5)
+
+# Each row represents a 60-second epoch with synchronized metrics across axes and algorithms.
+```
+
+# 🧪 Other Devices
+To process GENEActiv or Axivity data, change the device and data_folder arguments:
+```
+# GENEActiv
+accel_summaries(
+  device = "geneactiv",
+  data_folder = system.file("extdata/geneactiv", package = "universalaccel"),
+  output_folder = output_dir
+)
+
+# Axivity
+accel_summaries(
+  device = "axivity",
+  data_folder = system.file("extdata/axivity", package = "universalaccel"),
+  output_folder = output_dir
+)
+```
+
+
+# ⚙️ Customization
+You can customize:
+
+- Epoch lengths: epochs = c(1, 5, 60)
+- Metrics: metrics = c("ENMO", "MAD", "MIMS")
+- Time zone: tz = "America/Chicago"
+
+```
+accel_summaries(
+  device = "actigraph",
+  data_folder = actigraph_path,
+  output_folder = output_dir,
+  epochs = c(1, 60),
+  metrics = c("ENMO", "MAD", "MIMS"),
+  tz = "America/Chicago"
+)
+```
+
+
+# 🖥️ Shiny App
+Explore calibrated data interactively:
+```
+run_calibrated_data_app()
+```
+
+Or launch from the command line:
+
+```
+Rscript inst/cli/accel_summaries.R --config config.yml
+```
+
+
+# 🧪 Developer Preflight
+To validate package structure and functionality, run:
+```
+source("tools/preflight.R")
+
+```
+
+This script checks:
+- File structure and metadata
+- Function availability
+- Sample data integrity
+- End-to-end metric runs
+
+# 📚 References
+See the README and ?universalaccel() for citations and licensing.
+
+# ✅ Summary
+universalaccel is designed for reproducible, device-agnostic accelerometry workflows. Whether you're analyzing physical activity, building harmonization pipelines, or exploring metrics interactively, this package provides a robust foundation.
+

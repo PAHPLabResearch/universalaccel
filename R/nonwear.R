@@ -1,5 +1,5 @@
 # R/nonwear.R
-
+#' @noRd
 suppressPackageStartupMessages({
   library(dplyr)
 })
@@ -13,26 +13,26 @@ compute_choi_nonwear_minutes <- function(data,
                                          spike_tol = 2L,
                                          spike_upper = 100L,
                                          flank = 30L) {
-  
+
   df <- data %>%
     dplyr::select(all_of(c(id_col, time_col, cpm_col))) %>%
     arrange(.data[[id_col]], .data[[time_col]]) %>%
     rename(ID__   = !!id_col,
            TIME__ = !!time_col,
            CPM__  = !!cpm_col)
-  
+
   # Per-ID Choi implementation without data.table
   mark_id <- function(x) {
     z <- (x$CPM__ == 0L)
     l <- (x$CPM__ > 0L & x$CPM__ <= spike_upper)
     n <- length(z)
     nonwear <- rep(FALSE, n)
-    
+
     valid_spike <- function(idx) {
       if (idx - flank < 1L || idx + flank > n) return(FALSE)
       all(z[(idx - flank):(idx - 1L)]) && all(z[(idx + 1L):(idx + flank)])
     }
-    
+
     i <- 1L
     while (i <= n) {
       if (z[i]) {
@@ -50,13 +50,13 @@ compute_choi_nonwear_minutes <- function(data,
     }
     nonwear
   }
-  
+
   out <- df %>%
     group_by(ID__) %>%
     group_modify(~ mutate(.x, choi_nonwear = mark_id(.x))) %>%
     ungroup() %>%
     dplyr::select(ID__, TIME__, choi_nonwear)
-  
+
   out %>%
     rename(!!id_col := ID__, !!time_col := TIME__)
 }

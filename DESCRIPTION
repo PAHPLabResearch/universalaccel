@@ -44,5 +44,8 @@ Suggests:
     rcmdcheck,
     yaml,
     fs,
-    glue
+    glue,
+    knitr,
+    rmarkdown
 Config/testthat/edition: 3
+VignetteBuilder: knitr
