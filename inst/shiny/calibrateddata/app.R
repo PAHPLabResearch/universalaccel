@@ -46,9 +46,9 @@ public_subset <- function(df, id_col = guess_id_col(df)) {
 # -------------------------------
 
 data_file <- system.file("shiny/calibrateddata/devicefinaldataday.csv",
-                         package = "universal_accel")
+                         package = "universalaccel")
 if (identical(data_file, "") || !file.exists(data_file)) {
-  data_file <- "devicefinaldataday.csv"  # works when you run from inst/shiny/calibrateddata
+  data_file <- "devicefinaldataday.csv"  
 }
 DF_DAY <- readr::read_csv(data_file, show_col_types = FALSE)
 DF_DAY_PUBLIC <- public_subset(DF_DAY) 
