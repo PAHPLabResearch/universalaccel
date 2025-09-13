@@ -18,7 +18,8 @@ It supports **ActiGraph, Axivity, and GENEActiv** formats, with validated implem
 
 ```r
 # Install from GitHub
-remotes::install_github("jimmydhr/universalaccel")
+install.packages("remotes")
+remotes::install_github("JimmyDhr/universalaccel")
 
 # Run the pipeline with a config file
 Rscript inst/cli/accel_summaries.R --config config.yml
