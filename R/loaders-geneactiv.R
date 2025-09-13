@@ -55,7 +55,7 @@ read_and_calibrate_geneactiv <- function(file_path,
   
   # If no calibrated file appeared, fall back to direct read
   if (is.null(target) || !file.exists(target)) {
-    if (verbose) message("[GENEA] recalibration unavailable → using header calibration directly")
+    if (verbose) message("[GENEA] recalibration unavailable -> using header calibration directly")
     bin <- GENEAread::read.bin(file_path, calibrate = use_header_cal, verbose = FALSE)
     return(.genea_bin_to_tbl(bin, sample_rate, tz))
   }
