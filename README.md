@@ -4,7 +4,7 @@
 
 `universalaccel` supports reproducible workflows with harmonized outputs across devices. It includes validated implementations of:
 
-- ENMO, MAD, AI, MIMS-unit, ROCAM, and Activity Counts
+- ENMO, MAD, Activity Index, MIMS, ROCAM, and Activity Counts
 - Device-specific calibration and non-wear detection
 
 ---
