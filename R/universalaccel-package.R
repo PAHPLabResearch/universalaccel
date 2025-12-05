@@ -3,7 +3,8 @@
 #' universalaccel: Unified Accelerometry Metrics
 #'
 #' This package provides harmonized metric computation across ActiGraph, Axivity, and GENEActiv devices.
-#' It includes ENMO, MAD, MIMS, AI, ROCAM, and counts, with support for calibrated input and reproducible pipelines.
+#' It includes ENMO, MAD, MIMS, AI, ROCAM, and counts, with support for autocalibrated input and reproducible pipelines.
+#'
 #'
 #' @name universalaccel
 #' @description

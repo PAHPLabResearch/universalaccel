@@ -1,25 +1,24 @@
 # R/nonwear.R
 #' @noRd
-suppressPackageStartupMessages({
-  library(dplyr)
-})
 
 # data must be 1 row per minute per id, with: id, time (POSIXct), vector_magnitude
 compute_choi_nonwear_minutes <- function(data,
-                                         id_col   = "id",
-                                         time_col = "time",
-                                         cpm_col  = "vector_magnitude",
-                                         min_bout = 90L,
-                                         spike_tol = 2L,
+                                         id_col      = "id",
+                                         time_col    = "time",
+                                         cpm_col     = "vector_magnitude",
+                                         min_bout    = 90L,
+                                         spike_tol   = 2L,
                                          spike_upper = 100L,
-                                         flank = 30L) {
+                                         flank       = 30L) {
 
   df <- data %>%
-    dplyr::select(all_of(c(id_col, time_col, cpm_col))) %>%
-    arrange(.data[[id_col]], .data[[time_col]]) %>%
-    rename(ID__   = !!id_col,
-           TIME__ = !!time_col,
-           CPM__  = !!cpm_col)
+    dplyr::select(dplyr::all_of(c(id_col, time_col, cpm_col))) %>%
+    dplyr::arrange(.data[[id_col]], .data[[time_col]]) %>%
+    dplyr::rename(
+      ID__   = !!rlang::sym(id_col),
+      TIME__ = !!rlang::sym(time_col),
+      CPM__  = !!rlang::sym(cpm_col)
+    )
 
   # Per-ID Choi implementation without data.table
   mark_id <- function(x) {
@@ -52,11 +51,14 @@ compute_choi_nonwear_minutes <- function(data,
   }
 
   out <- df %>%
-    group_by(ID__) %>%
-    group_modify(~ mutate(.x, choi_nonwear = mark_id(.x))) %>%
-    ungroup() %>%
+    dplyr::group_by(ID__) %>%
+    dplyr::group_modify(~ dplyr::mutate(.x, choi_nonwear = mark_id(.x))) %>%
+    dplyr::ungroup() %>%
     dplyr::select(ID__, TIME__, choi_nonwear)
 
   out %>%
-    rename(!!id_col := ID__, !!time_col := TIME__)
+    dplyr::rename(
+      !!id_col   := ID__,
+      !!time_col := TIME__
+    )
 }

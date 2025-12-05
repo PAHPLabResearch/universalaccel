@@ -1,0 +1,10 @@
+name: Raw_Acceleration_Summary_Metrics
+title:
+username: pahplab
+account: pahplab
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 15442377
+bundleId: 10901764
+url: https://pahplab.shinyapps.io/Raw_Acceleration_Summary_Metrics/
+version: 1

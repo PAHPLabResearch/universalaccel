@@ -27,7 +27,8 @@ Imports:
     GENEAread,
     GGIR,
     cli,
-    utils
+    utils, 
+    rlang,
 Suggests:
     shiny,
     bslib,
