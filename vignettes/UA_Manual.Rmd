@@ -49,7 +49,7 @@ knitr::opts_chunk$set(
 - **MAD** (*Mean Amplitude Deviation*): mean deviation of acceleration magnitude within an epoch.
 - **AI** (*Activity Index*): variability-based activity metric computed from raw acceleration.
 - **MIMS-unit** (*Monitor-Independent Movement Summary unit*): standardized activity summary intended to be comparable across devices.
-- **ROCAM** (*Rate of Change Acceleration Magnitude*): change-based activity metric derived from successive acceleration magnitude samples.
+- **ROCAM** (*Rate of Change Acceleration Movement*): change-based activity metric derived from successive acceleration magnitude samples.
 - **AC** (*ActiGraph counts*): traditional “counts” (including vector magnitude counts when configured).
 - **NHANES** (*National Health and Nutrition Examination Survey*): U.S. survey used here as the reference population for zone boundaries and percentile tables.
 - **Anchor** (*default metric scale for conditioning*): the metric context used to define zones and percentiles; other metrics can be **equated** onto this anchor via **equipercentile** mapping.
@@ -126,9 +126,9 @@ Exact columns depend on device and selected metrics, but commonly include:
 - `MAD` (*Mean Amplitude Deviation*)
 - `AI` (*Activity Index*)
 - `MIMS_UNIT` (*Monitor-Independent Movement Summary unit*)
-- `ROCAM` (*Rate of Change Acceleration Magnitude*)
-- `Axis1`, `Axis2`, `Axis3` or `X`, `Y`, `Z` (*axis components; optional*)
-- `Vector.Magnitude` (*optional*)
+- `ROCAM` (*Rate of Change Acceleration Movement*)
+- `Axis1`, `Axis2`, `Axis3` or `X`, `Y`, `Z` (*axis components*)
+- `Vector.Magnitude` (*ActiGraph/Activity Counts*)
 - `choi_nonwear` (*nonwear flag; optional; depends on settings*)
 
 ## 5. Reproducibility & long-term stability checklist (avoid “degradable” workflows)
