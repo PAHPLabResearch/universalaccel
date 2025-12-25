@@ -13,7 +13,7 @@ ua_run(
 )
 }
 \arguments{
-\item{in_path}{Path to a precomputed CSV (epoch-level metrics).}
+\item{in_path}{Path to a precomputed file OR a folder containing one.}
 
 \item{out_dir}{Output directory where UA outputs will be written.}
 

@@ -13,7 +13,7 @@ ua_analyze_precomputed(
 )
 }
 \arguments{
-\item{in_path}{Path to a precomputed CSV (epoch-level metrics).}
+\item{in_path}{Path to a precomputed file OR a folder containing one.}
 
 \item{out_dir}{Output directory where UA outputs will be written.}
 
@@ -30,4 +30,11 @@ Invisibly returns whatever \code{ua_run_end_to_end()} returns.
 Runs the Part II workflow on \emph{precomputed} epoch-level files (e.g., outputs
 from \code{accel_summaries()}), producing Outputs 1–5 (bins, zone summaries,
 percentiles, optional weekly rollups, and a plain-language report).
+}
+\details{
+\code{in_path} may be either:
+\itemize{
+\item a supported file path (csv/txt/xlsx/xls/rds), or
+\item a folder containing at least one supported file (newest file is used).
+}
 }
