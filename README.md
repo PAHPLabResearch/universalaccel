@@ -5,8 +5,10 @@ It provides stable, reproducible epoch-level outputs and a downstream analysis w
 
 ## 🚀 Installation
 
+```r
 install.packages("remotes")
 remotes::install_github("PAHPLabResearch/universalaccel")
+```
 
 ## 📘 Documentation
 
