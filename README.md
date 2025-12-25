@@ -12,4 +12,4 @@ remotes::install_github("PAHPLabResearch/universalaccel")
 
 ## 📘 Documentation
 
-UA_Manual.PDF
+[![UA Manual PDF](https://img.shields.io/badge/UA%20Manual-PDF-blue)](vignettes/UA_Manual.pdf)
