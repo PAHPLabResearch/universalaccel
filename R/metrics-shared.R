@@ -61,52 +61,40 @@ calculate_activity_counts <- function(df_cal, file_path, epoch_sec, sample_rate 
                     ID   = clean_id(file_path))
   }, error = function(e) NULL)
 }
+# R/metrics_native.R
+
+#' ENMO at native epoch
 #' @export
 calculate_enmo <- function(df_cal, file_path, epoch_sec) {
   tryCatch({
-    message("  [ENMO] 1s -> epoch=", epoch_sec, "s")
-    df1s <- df_cal %>%
-      dplyr::mutate(
-        sec = lubridate::floor_date(time, "second"),
-        mag = sqrt(X^2 + Y^2 + Z^2)
-      ) %>%
-      dplyr::group_by(sec) %>%
-      dplyr::summarise(
-        ENMO_1s = mean(pmax(mag - 1, 0) * 1000, na.rm = TRUE),
-        .groups = "drop"
-      )
-    if (!nrow(df1s)) return(NULL)
-
-    df1s %>%
-      dplyr::mutate(time = snap_to_epoch(sec, epoch_sec)) %>%
+    message("  [ENMO] epoch=", epoch_sec, "s")
+    # assumes df_cal has columns: time, X, Y, Z
+    df_cal %>%
+      dplyr::mutate(time = snap_to_epoch(time, epoch_sec),
+                    mag  = sqrt(.data$X^2 + .data$Y^2 + .data$Z^2),
+                    ENMO_inst = pmax(.data$mag - 1, 0) * 1000) %>%
       dplyr::group_by(time) %>%
-      dplyr::summarise(ENMO = mean(ENMO_1s, na.rm = TRUE), .groups = "drop") %>%
+      dplyr::summarise(ENMO = mean(ENMO_inst, na.rm = TRUE), .groups = "drop") %>%
       dplyr::mutate(ID = clean_id(file_path))
   }, error = function(e) NULL)
 }
+
+#' MAD at native epoch
 #' @export
 calculate_mad <- function(df_cal, file_path, epoch_sec) {
   tryCatch({
-    message("  [MAD] 1s -> epoch=", epoch_sec, "s")
-    df1s <- df_cal %>%
-      dplyr::mutate(
-        sec = lubridate::floor_date(time, "second"),
-        mag = sqrt(X^2 + Y^2 + Z^2)
-      ) %>%
-      dplyr::group_by(sec) %>%
-      dplyr::summarise(
-        MAD_1s = mean(abs(mag - mean(mag, na.rm = TRUE)) * 1000, na.rm = TRUE),
-        .groups = "drop"
-      )
-    if (!nrow(df1s)) return(NULL)
-
-    df1s %>%
-      dplyr::mutate(time = snap_to_epoch(sec, epoch_sec)) %>%
+    message("  [MAD] epoch=", epoch_sec, "s")
+    df_cal %>%
+      dplyr::mutate(time = snap_to_epoch(time, epoch_sec),
+                    mag  = sqrt(.data$X^2 + .data$Y^2 + .data$Z^2)) %>%
       dplyr::group_by(time) %>%
-      dplyr::summarise(MAD = mean(MAD_1s, na.rm = TRUE), .groups = "drop") %>%
+      dplyr::summarise(MAD = mean(abs(.data$mag - mean(.data$mag, na.rm = TRUE)) * 1000,
+                                  na.rm = TRUE),
+                       .groups = "drop") %>%
       dplyr::mutate(ID = clean_id(file_path))
   }, error = function(e) NULL)
 }
+
 #' @export
 calculate_rocam <- function(df_cal, file_path, epoch_sec) {
   tryCatch({

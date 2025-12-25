@@ -18,9 +18,9 @@ accel_summaries <- function(device, data_folder, output_folder,
                             apply_nonwear = FALSE,
                             metrics = c("MIMS","AI","COUNTS","ENMO","MAD","ROCAM"),
                             tz = "UTC") {
-  
+
   if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
-  
+
   # 1) Loader
   loader <- switch(tolower(device),
                    "actigraph" = read_and_calibrate_actigraph,
@@ -28,23 +28,23 @@ accel_summaries <- function(device, data_folder, output_folder,
                    "geneactiv" = read_and_calibrate_geneactiv,
                    stop("Unknown device: ", device)
   )
-  
+
   # 2) File pattern
   pattern <- switch(tolower(device),
                     "actigraph" = "\\.gt3x$",
                     "axivity"   = "\\.csv(\\.gz)?$",
                     "geneactiv" = "\\.bin$"
   )
-  
+
   files <- list.files(data_folder, pattern = pattern, full.names = TRUE)
   if (!length(files)) { message("[WARN] No input files found"); return(invisible(NULL)) }
-  
+
   # 3) Metric registry
   metrics  <- toupper(metrics)
   valid    <- c("MIMS","AI","COUNTS","ENMO","MAD","ROCAM")
   unknown  <- setdiff(metrics, valid)
   if (length(unknown)) stop("Unknown metric(s): ", paste(unknown, collapse = ", "))
-  
+
   run_metric <- list(
     MIMS   = function(d,f,e)  calculate_mims(d, f, e, dynamic_range = dynamic_range),
     AI     = function(d,f,e)  calculate_ai(d, f, e, sample_rate = sample_rate),
@@ -53,20 +53,20 @@ accel_summaries <- function(device, data_folder, output_folder,
     MAD    = function(d,f,e)  calculate_mad(d, f, e),
     ROCAM  = function(d,f,e)  calculate_rocam(d, f, e)
   )
-  
+
   for (epoch in epochs) {
     message(paste0("\n[RUN] device=", device, " epoch=", epoch, "s"))
-    
+
     results <- lapply(files, function(fp) {
       message("[FILE] ", basename(fp))
       df_cal <- tryCatch(loader(fp, sample_rate = sample_rate, tz = tz),
                          error = function(e) { message("  [ERR] ", e$message); return(NULL) })
       if (is.null(df_cal)) return(NULL)
-      
+
       # 4) Compute selected metrics
       pieces <- lapply(metrics, function(m) run_metric[[m]](df_cal, fp, epoch))
       names(pieces) <- metrics
-      
+
       message("  [QC] metric availability:")
       for (nm in names(pieces)) {
         di <- pieces[[nm]]
@@ -76,20 +76,20 @@ accel_summaries <- function(device, data_folder, output_folder,
           message(sprintf("    - %-7s: %d rows", nm, nrow(di)))
         }
       }
-      
+
       # Require all requested metrics to have rows; otherwise skip this file
       if (any(vapply(pieces, function(x) is.null(x) || !nrow(x), logical(1)))) {
         message("  [SKIP] one or more metrics empty")
         return(NULL)
       }
-      
+
       # De-dup keys per piece
       pieces <- lapply(pieces, function(d) dplyr::distinct(d, time, ID, .keep_all = TRUE))
-      
+
       # 5) Inner join across metrics (default behavior)
       joined <- suppressMessages(Reduce(function(x, y) dplyr::inner_join(x, y, by = c("time","ID")), pieces))
       if (!nrow(joined)) { message("  [SKIP] join produced 0 rows"); return(NULL) }
-      
+
       # 6) Optional Choi non-wear if VM present
       if (apply_nonwear && "Vector.Magnitude" %in% names(joined)) {
         message("  [NONWEAR] computing Choi flags from minute Vector.Magnitude")
@@ -98,7 +98,7 @@ accel_summaries <- function(device, data_folder, output_folder,
                            time = lubridate::floor_date(time, "minute"),
                            vector_magnitude = Vector.Magnitude) |>
           dplyr::distinct(id, time, .keep_all = TRUE)
-        
+
         vm_flag <- compute_choi_nonwear_minutes(
           vm_min,
           min_bout    = 90L,
@@ -106,30 +106,30 @@ accel_summaries <- function(device, data_folder, output_folder,
           spike_upper = 100L,
           flank       = 30L
         )
-        
+
         joined <- dplyr::left_join(
           joined,
           dplyr::select(vm_flag, id, time, choi_nonwear),
           by = c("ID" = "id", "time" = "time")
         )
       }
-      
+
       joined |>
         dplyr::distinct(time, ID, .keep_all = TRUE) |>
         dplyr::arrange(time)
     })
-    
+
     final_df <- dplyr::bind_rows(results)
     if (!nrow(final_df)) { message("  [SKIP] no rows written"); next }
-    
+
     # Classic filename (unchanged)
     out_file <- file.path(
       output_folder,
-      paste0("univ_", tolower(device), "_epoch", epoch, "s_", Sys.Date(), ".csv")
+      paste0("UA_", tolower(device), "_epoch", epoch, "s_", Sys.Date(), ".csv")
     )
     readr::write_csv(final_df, out_file)
     message("  [WRITE] ", out_file)
   }
-  
+
   message("\n[DONE] all epochs")
 }
