@@ -61,9 +61,7 @@ calculate_activity_counts <- function(df_cal, file_path, epoch_sec, sample_rate 
                     ID   = clean_id(file_path))
   }, error = function(e) NULL)
 }
-# R/metrics_native.R
 
-#' ENMO at native epoch
 #' @export
 calculate_enmo <- function(df_cal, file_path, epoch_sec) {
   tryCatch({
@@ -79,7 +77,6 @@ calculate_enmo <- function(df_cal, file_path, epoch_sec) {
   }, error = function(e) NULL)
 }
 
-#' MAD at native epoch
 #' @export
 calculate_mad <- function(df_cal, file_path, epoch_sec) {
   tryCatch({
