@@ -9,3 +9,6 @@
 data-raw/
 notes/
 inst/doc
+
+# build artifacts
+vignettes/*.pdf

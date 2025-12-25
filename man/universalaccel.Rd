@@ -8,12 +8,12 @@ A unified framework for computing harmonized accelerometry metrics across ActiGr
 }
 \details{
 This package provides harmonized metric computation across ActiGraph, Axivity, and GENEActiv devices.
-It includes ENMO, MAD, MIMS, AI, ROCAM, and counts, with support for calibrated input and reproducible pipelines.
+It includes ENMO, MAD, MIMS, AI, ROCAM, and counts, with support for autocalibrated input and reproducible pipelines.
 
 \code{universalaccel} is designed for researchers, data scientists, and developers working with raw accelerometry data.
 It supports reproducible pipelines across ActiGraph, Axivity, and GENEActiv devices, with harmonized metric outputs.
 
-For a quick overview, see the README at \url{https://github.com/JimmyDhr/universalaccel}.
+For a quick overview, see the README at \url{https://github.com/PAHPLabResearch/universalaccel}.
 For developer validation, run \code{source("tools/preflight.R")} from the package root.
 For interactive exploration, launch the Shiny app via \code{\link[=run_calibrated_data_app]{run_calibrated_data_app()}}.
 }

@@ -29,6 +29,7 @@ Imports:
     cli,
     utils, 
     rlang,
+    data.table,
 Suggests:
     shiny,
     bslib,
