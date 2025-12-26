@@ -201,39 +201,44 @@ This demo is intentionally larger than the tiny raw samples (so AA, IG, and week
 
 ```{r part2_quickstart}
 library(universalaccel)
+library(readr)
 
 # Precomputed demo file shipped with the package
 pre_base <- "UA_FLASH_sample"
-pre_csv  <- system.file("extdata/Precomputed",
-                        paste0(pre_base, ".csv"),
-                        package = "universalaccel")
+pre_csv  <- system.file(
+  "extdata/Precomputed",
+  paste0(pre_base, ".csv"),
+  package = "universalaccel"
+)
 
 stopifnot(nzchar(pre_csv))  # ensures the file exists in the installed package
 
 # Where to write Part 2 outputs
 out_root <- tempdir()
 
-# Run Part 2 analysis (writes a folder named "<pre_base>_UA_outputs" under out_root)
+# Run Part 2 analysis (writes "<pre_base>_UA_outputs" under out_root)
 analysis <- ua_analyze_precomputed(
   in_path     = pre_csv,
-  out_dir     = out_root,   # parent folder (function creates <pre_base>_UA_outputs)
+  out_dir     = out_root,
   location    = "ndw",
   make_weekly = TRUE,
   overwrite   = TRUE
 )
 
-# Inspect files written
+# Inspect files written (short names only to avoid overflow)
 part2_dir <- file.path(out_root, paste0(pre_base, "_UA_outputs"))
 basename(list.files(part2_dir, full.names = TRUE))
 
-# Safely preview outputs 
-preview <- function(pattern) { 
-  f <- list.files(part2_dir, pattern = pattern, full.names = TRUE) 
-  if (length(f)) readr::read_csv(f[1], n_max = 5) }
+# Safely preview outputs
+preview <- function(pattern) {
+  f <- list.files(part2_dir, pattern = pattern, full.names = TRUE)
+  if (length(f)) read_csv(f[1], n_max = 5, 
+                          col_types = cols(sex = col_character()))
+}
 
-preview("UA_Output1_BINS") 
-preview("UA_Output2_SUMMARY") 
-preview("UA_Output3_PERCENTILES") 
+preview("UA_Output1_BINS")
+preview("UA_Output2_SUMMARY")
+preview("UA_Output3_PERCENTILES")
 preview("UA_Output4_WEEKLY")
 ```
 
