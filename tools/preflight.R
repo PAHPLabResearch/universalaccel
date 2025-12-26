@@ -121,7 +121,7 @@ if (any(too_big)) {
 pre_dir <- "inst/extdata/Precomputed"
 must_dir(pre_dir, "Precomputed (Part II)")
 
-pre_base <- "UA_actigraph_epoch60s_2025-12-24"
+pre_base <- "UA_FLASH_sample"
 pre_csv  <- fs::path(pre_dir, paste0(pre_base, ".csv"))
 must_exist(pre_csv, "Precomputed Part II CSV")
 
@@ -175,10 +175,10 @@ say("Running Part II (precomputed analysis) smoke test …")
 pre_dir <- "inst/extdata/Precomputed"
 must_exist(pre_dir, "Precomputed sample folder")
 
-pre_csv <- fs::path(pre_dir, "UA_actigraph_epoch60s_2025-12-24.csv")
+pre_csv <- fs::path(pre_dir, "UA_FLASH_sample.csv")
 must_exist(pre_csv, "Precomputed sample CSV (Part II)")
 
-safe_stub <- "UA_actigraph_epoch60s_2025-12-24"
+safe_stub <- "UA_FLASH_sample"
 part2_parent <- out_dir  # <-- parent
 analysis_part2 <- universalaccel::ua_analyze_precomputed(
   in_path     = pre_csv,

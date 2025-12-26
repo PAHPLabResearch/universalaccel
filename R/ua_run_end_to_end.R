@@ -494,7 +494,11 @@ ua_run_end_to_end <- function(in_path,
   # ============================================================
   # RUN
   # ============================================================
-  DT <- as.data.table(load_precomputed_metrics(in_path))
+  DT <- as.data.table(load_precomputed_metrics(in_path,
+                                               apply_valid_filters = TRUE,
+                                               valid_day_hours = 16,
+                                               valid_week_days = 0))
+
 
   loader_meta <- attr(DT, "ua_loader_meta")
   if (!is.list(loader_meta)) loader_meta <- list()

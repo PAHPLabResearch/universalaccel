@@ -12,41 +12,25 @@ load_precomputed_metrics(
 )
 }
 \arguments{
-\item{path}{File path}
+\item{path}{File path (.csv/.txt/.xlsx/.xls/.rds)}
 
-\item{apply_valid_filters}{logical; apply valid day/week rules}
+\item{apply_valid_filters}{logical; apply strict valid-day filtering}
 
 \item{valid_day_hours}{numeric; default 16}
 
-\item{valid_week_days}{integer; default 3}
+\item{valid_week_days}{integer; deprecated/ignored (kept for backward compatibility)}
 }
 \description{
-Reads a file into a canonical wide table with columns like:
-id, time, epoch_sec, ac, enmo, mad, mims_unit, ai, rocam, ...
-plus optional: sex (M/F/All), age (integer)
+Canonical output columns:
+id, time (POSIXct UTC), epoch_sec (5 or 60), sex (M/F/All), age (int),
+plus numeric metric cols (any of: ac,enmo,mad,mims_unit,ai,rocam, ...)
 }
 \details{
-Supported inputs:
+HARD RULES:
 \itemize{
-\item .csv / .txt (data.table::fread)
-\item .xlsx / .xls (readxl::read_excel; first sheet)
-\item .rds (readRDS; data.frame/data.table)
-}
-
-HARD RULE:
-epoch_sec must be exactly 5 or 60 (and not mixed).
-
-Optional validity filtering (recommended):
-\itemize{
-\item Valid day  = >= valid_day_hours (default 16h) worth of records
-\item Valid week = >= valid_week_days (default 3) valid days within a 7-day block
-where week blocks are defined per-id starting at the first observed day in the file.
-}
-
-Notes:
-\itemize{
-\item If sex/age are missing, the loader will warn and fall back to sex='All' and age=NA.
-\item Single-metric datasets are supported (must include at least one numeric metric column).
-\item Adds attribute attr(DT,"ua_loader_meta") used downstream for Output5.
+\item epoch_sec must be exactly 5 or 60 (single value; not mixed)
+\item if apply_valid_filters=TRUE then valid day is NON-NEGOTIABLE:
+keep ONLY id×day with >= valid_day_hours hours of UNIQUE epoch timestamps
+(week filter removed)
 }
 }

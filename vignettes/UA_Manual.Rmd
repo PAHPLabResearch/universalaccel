@@ -8,13 +8,6 @@ output:
     toc: false
     number_sections: false
   html_document: default
-  
-  output: rmarkdown::html_vignette
-vignette: >
-  %\VignetteIndexEntry{universalaccel Manual}
-  %\VignetteEngine{knitr::rmarkdown}
-  %\VignetteEncoding{UTF-8}
-
 ---
 
 ```{r setup, include=FALSE}
@@ -29,81 +22,86 @@ knitr::opts_chunk$set(
 # Contents
 
 **Part 1 — Generating Metrics**
+
 1. What UA is (universal accelerometry pipeline)  
 2. Inputs and expectations (file formats, columns, epochs)  
 3. Running metric generation (`accel_summaries`)  
 4. Output files and variable list (epoch-level metrics)  
-5. Reproducibility & long-term stability checklist  
 
 **Part 2 — Analysis**
-6. What “analysis-ready” means in UA (harmonized, tidy outputs)  
-7. Daily summaries and binned distributions (bins, zones)  
-8. NHANES references (National Health and Nutrition Examination Survey)  
-9. Running Part 2 on a precomputed demo file (`ua_analyze_precomputed`)  
-10. Output tables (Output1–Output5) and variable lists  
 
-# Abbreviations
+5. What “analysis-ready” means in UA (harmonized, tidy outputs)  
+6. Daily summaries and binned distributions (bins, zones)  
+7. NHANES references (National Health and Nutrition Examination Survey)  
+8. Running Part 2 on a precomputed demo file (`ua_analyze_precomputed`)  
+9. Output tables (Output1–Output5) and variable lists  
+
+\newpage
+
+# Abbreviations and Terms
 
 - **UA** (*universalaccel*): the package ecosystem (functions + reference tables + output contracts).
-- **ENMO** (*Euclidean Norm Minus One*): acceleration magnitude above 1g after removing the static component (device-calibrated where applicable).
+- **ENMO** (*Euclidean Norm Minus One*): acceleration magnitude above 1g after removing the static component (autocalibration applied).
 - **MAD** (*Mean Amplitude Deviation*): mean deviation of acceleration magnitude within an epoch.
 - **AI** (*Activity Index*): variability-based activity metric computed from raw acceleration.
 - **MIMS-unit** (*Monitor-Independent Movement Summary unit*): standardized activity summary intended to be comparable across devices.
-- **ROCAM** (*Rate of Change Acceleration Movement*): change-based activity metric derived from successive acceleration magnitude samples.
-- **AC** (*ActiGraph counts*): traditional “counts” (including vector magnitude counts when configured).
+- **ROCAM** (*Rate of Change Acceleration Movement*): change-based activity metric derived from successive acceleration movement samples.
+- **AC** (*ActiGraph counts*): traditional “counts”.
 - **NHANES** (*National Health and Nutrition Examination Survey*): U.S. survey used here as the reference population for zone boundaries and percentile tables.
 - **Anchor** (*default metric scale for conditioning*): the metric context used to define zones and percentiles; other metrics can be **equated** onto this anchor via **equipercentile** mapping.
 - **Epoch** (*aggregation window*): the time length used to summarize raw samples into rows (e.g., 5 seconds or 60 seconds).
 - **AA** (*Average acceleration*): the daily time-weighted mean of the intensity distribution (computed from bin midpoints × minutes in bin).
 - **IG** (*Intensity gradient*): the slope from regressing log(time in bin) on log(intensity midpoint); more negative means a steeper drop-off at higher intensities.
-- **LUT** (*Lookup Table*): mapping table used for zones/percentiles.
-- **CLI** (*Command Line Interface*): non-interactive run mode.
-- **YAML** (*YAML Ain't Markup Language*): configuration file format (e.g., `config.yml`).
 
-\\newpage
+
+\newpage
 
 # Part 1 — Generating Metrics (how to produce harmonized files)
 
 ## 1. What UA is (universalaccel)
 
-**universalaccel (UA)** is an R pipeline for computing harmonized accelerometer summary metrics across multiple devices (e.g., ActiGraph, Axivity, GENEActiv). The goal is to make raw accelerometer data comparable by producing standardized, epoch-level outputs with consistent naming, time handling, and reproducible settings.
+**universalaccel (UA)** is an R pipeline for computing harmonized accelerometer summary metrics across multiple devices (Tested on: ActiGraph, Axivity, GENEActiv). The goal is to make raw accelerometer data comparable by producing standardized, epoch-level outputs with consistent naming, time handling, and reproducible settings.
 
-UA typically supports metrics such as ENMO (Euclidean Norm Minus One), MAD (Mean Amplitude Deviation), AI (Activity Index), MIMS-unit (Monitor-Independent Movement Summary), ROCAM (Rate of Change Acceleration Magnitude), and AC (ActiGraph counts / activity counts).
+### UA tested files and order of operations:
+
+- ActiGraph (GT3X), .gt3x raw data is passed through `?agcounts::agcalibrate()` first and metrics are computed.
+- Axivity (AX3), .resampled.CSV is autocalibrated in OmGui, so metrics are directly computed.
+- GeneActiv, .bin raw data is passed through `?GENEAread::recalibrate()` first and metrics are computed.
+- Note that this workflow does not eliminate any file based on the threshold of calibration error.
 
 ## 2. Inputs and expectations (file formats, columns, epochs)
 
 ### What you provide
-Depending on device type, you provide either:
-- Raw device files (e.g., ActiGraph `.gt3x`, Axivity `resampled.csv`, GENEActiv `.bin`), **or**
-- A precomputed/processed table already aligned to an epoch and containing metric columns.
+Depending on device type, you provide:
+- Raw device files (ActiGraph `.gt3x`, Axivity `resampled`.csv`, GENEActiv `.bin`)
 
 ### Key expectations
-- A consistent epoch for the output you want (`epoch_sec`; commonly 5 seconds or 60 seconds).
-- Correct sample rate and dynamic range for raw devices (when required).
-- Consistent timezone handling (recommended: be explicit).
+- A consistent alignment ofmetric at the selected epoch length (`epoch_sec`; commonly 5 seconds or 60 seconds).
+- Correct sample rate and dynamic range for raw devices as configured (or when required by some summary metrics).
+- Consistent timezone handling (typically this is handled by device software but it is configurable here).
 
-## 3. Quick Start: generate metrics with `accel_summaries()` (epoch-level outputs)
+## 3. Quick Start: generate metrics with `?accel_summaries()` (epoch-level outputs)
 
 ```{r part1_quickstart}
 library(universalaccel)
 
+# Locate sample data bundled with the package (ActiGraph example)
 actigraph_path <- system.file("extdata/actigraph", package = "universalaccel")
-list.files(actigraph_path)
-
-## Define output directory
 output_dir <- tempdir()
 
-## Run the pipeline
+# Run metric generation. 
+# The set up can hold other arguments see more:?universalaccel::accel_summaries()
 accel_summaries(
-  device        = "actigraph",
-  data_folder   = actigraph_path,
-  output_folder = output_dir,
+  device        = "actigraph", #define device type
+  data_folder   = actigraph_path, # data folder for batch processing
+  output_folder = output_dir, # output folder
   epochs        = 60,
   sample_rate   = 100,
   dynamic_range = c(-8, 8),
-  metrics       = c("AI","Counts","ENMO","MAD","MIMS","ROCAM"), 
+  metrics       = c("MIMS","ENMO","MAD","COUNTS","AI","ROCAM"),
   apply_nonwear = TRUE
-)
+) 
+
 ```
 
 ## 4. Output files and variable list (epoch-level metrics)
@@ -112,8 +110,21 @@ After `accel_summaries()`, you will typically see one or more CSV files written 
 
 ```{r part1_list_outputs}
 # List generated CSVs
-list.files(output_dir, pattern = "UA_actigraph", full.names = TRUE)
-readr::read_csv(list.files(output_dir, pattern = "UA_actigraph", full.names = TRUE)[1], n_max = 5)
+files <- list.files(output_dir, pattern = "UA_actigraph", full.names = TRUE)
+# Processed files
+basename(files)
+
+filecheck <- function(pattern, index = 1) {
+  f <- list.files(output_dir, pattern = pattern, full.names = TRUE)
+  if (!length(f)) stop("No files found.")
+
+  if (index > length(f)) stop("Index out of range.")
+
+  readr::read_csv(f[index], n_max = 3)
+}
+
+filecheck("UA_actigraph", index = 1)
+
 ```
 
 ### Typical epoch-level variables (what they mean)
@@ -129,16 +140,8 @@ Exact columns depend on device and selected metrics, but commonly include:
 - `ROCAM` (*Rate of Change Acceleration Movement*)
 - `Axis1`, `Axis2`, `Axis3` or `X`, `Y`, `Z` (*axis components*)
 - `Vector.Magnitude` (*ActiGraph/Activity Counts*)
-- `choi_nonwear` (*nonwear flag; optional; depends on settings*)
+- `choi_nonwear` (*nonwear flag: epoch-aware*)
 
-## 5. Reproducibility & long-term stability checklist (avoid “degradable” workflows)
-
-### Recommended stability practices
-- Use `renv` to pin package versions.
-- Keep a stable `config.yml` (YAML Ain't Markup Language) with explicit settings.
-- Avoid relying on “latest” upstream behavior when possible.
-- Store raw inputs read-only; write outputs to versioned folders.
-- Save the UA version used (package version) alongside outputs.
 
 ```{r renv_pin_example, eval=FALSE}
 # In your UA project root:
@@ -146,11 +149,16 @@ renv::init()      # once
 renv::snapshot()  # whenever dependencies change
 ```
 
-\\newpage
+
+\newpage
 
 # Part 2 — Analysis & Interpretation (precomputed files → distributions → zones → percentiles)
 
 ## 6. What “analysis-ready” means in UA
+
+### What you provide
+Depending on device type, you provide:
+- A precomputed/processed table already aligned to an epoch and containing metric columns with age and sex columns.
 
 An “analysis-ready” UA file has:
 - consistent time and epoch (`epoch_sec`)
@@ -186,7 +194,8 @@ UA uses NHANES references to answer:
 ## 9. Quick Start (Part 2): run analysis on the bundled precomputed demo file
 
 UA includes a small but “analysis-capable” precomputed demo file under:
-`inst/extdata/Precomputed/UA_actigraph_epoch60s_2025-12-24.csv`
+
+`inst/extdata/Precomputed/UA_FLASH_sample.csv`
 
 This demo is intentionally larger than the tiny raw samples (so AA, IG, and weekly rollups are meaningful).
 
@@ -194,7 +203,7 @@ This demo is intentionally larger than the tiny raw samples (so AA, IG, and week
 library(universalaccel)
 
 # Precomputed demo file shipped with the package
-pre_base <- "UA_actigraph_epoch60s_2025-12-24"
+pre_base <- "UA_FLASH_sample"
 pre_csv  <- system.file("extdata/Precomputed",
                         paste0(pre_base, ".csv"),
                         package = "universalaccel")
@@ -204,10 +213,10 @@ stopifnot(nzchar(pre_csv))  # ensures the file exists in the installed package
 # Where to write Part 2 outputs
 out_root <- tempdir()
 
-# Run Part 2 analysis
+# Run Part 2 analysis (writes a folder named "<pre_base>_UA_outputs" under out_root)
 analysis <- ua_analyze_precomputed(
   in_path     = pre_csv,
-  out_dir     = out_root,
+  out_dir     = out_root,   # parent folder (function creates <pre_base>_UA_outputs)
   location    = "ndw",
   make_weekly = TRUE,
   overwrite   = TRUE
@@ -215,17 +224,16 @@ analysis <- ua_analyze_precomputed(
 
 # Inspect files written
 part2_dir <- file.path(out_root, paste0(pre_base, "_UA_outputs"))
-list.files(part2_dir, full.names = TRUE)
+basename(list.files(part2_dir, full.names = TRUE))
 
-# Safely preview outputs
-preview <- function(pattern) {
-  f <- list.files(part2_dir, pattern = pattern, full.names = TRUE)
-  if (length(f)) readr::read_csv(f[1], n_max = 3)
-}
+# Safely preview outputs 
+preview <- function(pattern) { 
+  f <- list.files(part2_dir, pattern = pattern, full.names = TRUE) 
+  if (length(f)) readr::read_csv(f[1], n_max = 5) }
 
-preview("UA_Output1_BINS")
-preview("UA_Output2_SUMMARY")
-preview("UA_Output3_PERCENTILES")
+preview("UA_Output1_BINS") 
+preview("UA_Output2_SUMMARY") 
+preview("UA_Output3_PERCENTILES") 
 preview("UA_Output4_WEEKLY")
 ```
 
@@ -264,3 +272,6 @@ This manual assumes the Part 2 runner produces:
 
 ### Output5 — Run report (plain language)
 **Purpose:** a plain-language summary of what ran, what was produced, and how to interpret the columns.
+
+### Reference
+**Part1 Implementation** https://doi.org/10.1123/jmpb.2025-0024
