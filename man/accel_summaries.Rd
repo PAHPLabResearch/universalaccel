@@ -29,7 +29,9 @@ accel_summaries(
 
 \item{dynamic_range}{g-range for MIMS (length-2, e.g., c(-8, 8))}
 
-\item{apply_nonwear}{Logical; if TRUE, derive Choi flags from minute VM (when available)}
+\item{apply_nonwear}{Logical; if TRUE, compute Choi flags using PhysicalActivity::wearingMarking()
+(epoch-aware via perMinuteCts = 60/epoch), then DROP nonwear rows.
+Output keeps \code{choi_nonwear} column but it is always FALSE (no TRUEs written).}
 
 \item{metrics}{Character vector of metrics to compute. Any of:
 c("MIMS","AI","COUNTS","ENMO","MAD","ROCAM"). Defaults to all.}

@@ -6,7 +6,9 @@
 #' @param epochs Numeric vector of epoch lengths in seconds
 #' @param sample_rate Target Hz for loaders that need a grid
 #' @param dynamic_range g-range for MIMS (length-2, e.g., c(-8, 8))
-#' @param apply_nonwear Logical; if TRUE, derive Choi flags from minute VM (when available)
+#' @param apply_nonwear Logical; if TRUE, compute Choi flags using PhysicalActivity::wearingMarking()
+#'   (epoch-aware via perMinuteCts = 60/epoch), then DROP nonwear rows.
+#'   Output keeps `choi_nonwear` column but it is always FALSE (no TRUEs written).
 #' @param metrics Character vector of metrics to compute. Any of:
 #'   c("MIMS","AI","COUNTS","ENMO","MAD","ROCAM"). Defaults to all.
 #' @param tz Timezone for timestamps (passed to loaders)
@@ -54,7 +56,62 @@ accel_summaries <- function(device, data_folder, output_folder,
     ROCAM  = function(d,f,e)  calculate_rocam(d, f, e)
   )
 
+  # Nonwear helper: epoch-aware using compute_choi_nonwear(), then drop nonwear rows.
+  # Guarantee: `choi_nonwear` exists but has no TRUE in final output.
+  mark_nonwear_epoch <- function(joined, epoch_sec) {
+    if (!requireNamespace("dplyr", quietly = TRUE)) {
+      stop("Package 'dplyr' is required for apply_nonwear=TRUE.")
+    }
+
+    if (!("Vector.Magnitude" %in% names(joined))) {
+      message("  [NONWEAR] Vector.Magnitude not present; skipping nonwear marking")
+      joined$choi_nonwear <- FALSE
+      return(joined)
+    }
+
+    message(sprintf("  [NONWEAR] Choi (PhysicalActivity::wearingMarking) epoch-aware: epoch=%ss", epoch_sec))
+
+    vm_epoch <- joined |>
+      dplyr::transmute(
+        id = ID,
+        time = time,
+        vector_magnitude = Vector.Magnitude
+      ) |>
+      dplyr::distinct(id, time, .keep_all = TRUE) |>
+      dplyr::arrange(id, time)
+
+    vm_flag <- compute_choi_nonwear(
+      vm_epoch,
+      id_col = "id",
+      time_col = "time",
+      cpm_col = "vector_magnitude",
+      frame = 90L,
+      allowance = 2L,
+      streamFrame = NULL,          # mirror package default
+      epoch_sec = as.integer(epoch_sec),
+      getMinuteMarking = FALSE,    # epoch-by-epoch marking
+      tz = tz
+    )
+
+    out <- joined |>
+      dplyr::left_join(
+        dplyr::select(vm_flag, id, time, choi_nonwear),
+        by = c("ID" = "id", "time" = "time")
+      ) |>
+      dplyr::mutate(choi_nonwear = dplyr::coalesce(choi_nonwear, FALSE)) |>
+      dplyr::filter(!choi_nonwear) |>
+      dplyr::mutate(choi_nonwear = FALSE)
+
+    out
+  }
+
   for (epoch in epochs) {
+    epoch <- as.integer(epoch)
+    if (!is.finite(epoch) || epoch <= 0L) stop("Invalid epoch in epochs: ", epoch)
+    if ((60L %% epoch) != 0L) {
+      stop("Epoch must divide 60 seconds for Choi perMinuteCts; got epoch=", epoch)
+    }
+
     message(paste0("\n[RUN] device=", device, " epoch=", epoch, "s"))
 
     results <- lapply(files, function(fp) {
@@ -90,28 +147,10 @@ accel_summaries <- function(device, data_folder, output_folder,
       joined <- suppressMessages(Reduce(function(x, y) dplyr::inner_join(x, y, by = c("time","ID")), pieces))
       if (!nrow(joined)) { message("  [SKIP] join produced 0 rows"); return(NULL) }
 
-      # 6) Optional Choi non-wear if VM present
-      if (apply_nonwear && "Vector.Magnitude" %in% names(joined)) {
-        message("  [NONWEAR] computing Choi flags from minute Vector.Magnitude")
-        vm_min <- joined |>
-          dplyr::transmute(id = ID,
-                           time = lubridate::floor_date(time, "minute"),
-                           vector_magnitude = Vector.Magnitude) |>
-          dplyr::distinct(id, time, .keep_all = TRUE)
-
-        vm_flag <- compute_choi_nonwear_minutes(
-          vm_min,
-          min_bout    = 90L,
-          spike_tol   = 2L,
-          spike_upper = 100L,
-          flank       = 30L
-        )
-
-        joined <- dplyr::left_join(
-          joined,
-          dplyr::select(vm_flag, id, time, choi_nonwear),
-          by = c("ID" = "id", "time" = "time")
-        )
+      # 6) Optional Choi non-wear (epoch-aware; then DROP nonwear rows)
+      if (apply_nonwear) {
+        joined <- mark_nonwear_epoch(joined, epoch_sec = epoch)
+        if (!nrow(joined)) { message("  [SKIP] all rows removed as nonwear"); return(NULL) }
       }
 
       joined |>

@@ -26,6 +26,7 @@ Imports:
     agcounts,
     GENEAread,
     GGIR,
+    PhysicalActivity,
     cli,
     utils, 
     rlang,
