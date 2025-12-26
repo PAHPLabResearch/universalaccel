@@ -69,7 +69,7 @@ accel_summaries <- function(device, data_folder, output_folder,
       return(joined)
     }
 
-    message(sprintf("  [NONWEAR] Choi (PhysicalActivity::wearingMarking) epoch-aware: epoch=%ss", epoch_sec))
+    message(sprintf("  [NONWEAR] Choi: epoch=%ss", epoch_sec))
 
     vm_epoch <- joined |>
       dplyr::transmute(
