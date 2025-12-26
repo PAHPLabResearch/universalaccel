@@ -232,8 +232,14 @@ basename(list.files(part2_dir, full.names = TRUE))
 # Safely preview outputs
 preview <- function(pattern) {
   f <- list.files(part2_dir, pattern = pattern, full.names = TRUE)
-  if (length(f)) read_csv(f[1], n_max = 5, 
-                          col_types = cols(sex = col_character()))
+  if (length(f)) read_csv(
+    f[1],
+    n_max = 5,
+    col_types = cols(
+      sex      = col_character(),
+      sex_name = col_character()
+    )
+  )
 }
 
 preview("UA_Output1_BINS")
