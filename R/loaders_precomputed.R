@@ -1,26 +1,31 @@
-# R/loaders_precomputed.R
-
 #' Load precomputed metric time-series for binning / IG (robust messy inputs)
 #'
 #' Canonical output columns:
-#'   id, time (POSIXct UTC), epoch_sec (5 or 60), sex (M/F/All), age (int),
+#'   id, time (POSIXct), epoch_sec (5 or 60), sex (M/F/All), age (int),
 #'   plus numeric metric cols (any of: ac,enmo,mad,mims_unit,ai,rocam, ...)
+#'   plus: day (dense index per-id based on day_tz)
 #'
 #' HARD RULES:
 #'   - epoch_sec must be exactly 5 or 60 (single value; not mixed)
 #'   - if apply_valid_filters=TRUE then valid day is NON-NEGOTIABLE:
-#'       keep ONLY id×day with >= valid_day_hours hours of UNIQUE epoch timestamps
-#'       (week filter removed)
+#'       keep ONLY id×day_date with >= valid_day_hours hours of UNIQUE epoch timestamps
+#'       (NO WEEK FILTER)
 #'
 #' @param path File path (.csv/.txt/.xlsx/.xls/.rds)
 #' @param apply_valid_filters logical; apply strict valid-day filtering
 #' @param valid_day_hours numeric; default 16
-#' @param valid_week_days integer; deprecated/ignored (kept for backward compatibility)
+#' @param valid_week_days integer; DEPRECATED/ignored (kept for backward compatibility)
+#' @param day_tz character; timezone used to define "day" boundaries.
+#'   - Default "UTC" (reproducible)
+#'   - Use "" to use the system local timezone
+#'   - Or provide an IANA tz like "America/Chicago"
 #' @export
 load_precomputed_metrics <- function(path,
                                      apply_valid_filters = TRUE,
                                      valid_day_hours = 16,
-                                     valid_week_days = 3) {  # ignored
+                                     valid_week_days = 3,   # ignored
+                                     day_tz = "UTC") {
+
   if (!requireNamespace("data.table", quietly = TRUE)) stop("Package 'data.table' is required.")
   if (!file.exists(path)) stop("File not found: ", path)
 
@@ -82,9 +87,6 @@ load_precomputed_metrics <- function(path,
     "vector_magnitude"="ac", "vector_magnitude_counts"="ac",
     "vector_magnitude_count"="ac",
     "vm"="ac", "ac"="ac", "counts"="ac", "count"="ac",
-    "vector_magnitude_"="ac", "vector_magnitude__"="ac",
-    "vector_magnitude_dup"="ac",
-    "vector_magnitude_counts_dup"="ac",
 
     # axes (allowed, not required)
     "axis1"="axis1","axis2"="axis2","axis3"="axis3",
@@ -95,14 +97,17 @@ load_precomputed_metrics <- function(path,
   )
 
   is_num_dest <- function(dest) {
-    dest %in% c("ac","enmo","mad","mims_unit","ai","rocam","axis1","axis2","axis3","epoch_sec","age")
+    dest %in% c("ac","enmo","mad","mims_unit","ai","rocam",
+                "axis1","axis2","axis3","epoch_sec","age")
   }
+
   init_dest <- function(dest) {
     if (!(dest %in% names(DT))) {
       if (is_num_dest(dest)) DT[, (dest) := NA_real_]
       else DT[, (dest) := NA_character_]
     }
   }
+
   coalesce_to <- function(dest, srcs) {
     srcs <- intersect(srcs, names(DT))
     if (!length(srcs)) return(invisible(NULL))
@@ -126,12 +131,10 @@ load_precomputed_metrics <- function(path,
     coalesce_to(dest, srcs)
   }
 
-  # drop ONLY true synonym columns that are not canonical dests
-  # (never drop canonical columns; never drop non-map columns)
-  syn_cols_present <- intersect(names(map), names(DT))          # synonyms that exist in DT
-  drop_cols <- setdiff(syn_cols_present, dests)                # synonyms minus canonical
+  # SAFE: drop only synonym columns that exist, and are not canonical dests
+  syn_cols_present <- intersect(names(map), names(DT))
+  drop_cols <- setdiff(syn_cols_present, dests)
   if (length(drop_cols)) DT[, (drop_cols) := NULL]
-
 
   if (!("time" %in% names(DT))) stop("No time column detected (time/datetime/timestamp/date).")
 
@@ -153,7 +156,7 @@ load_precomputed_metrics <- function(path,
     s[s == ""] <- NA_character_
     out <- rep(as.POSIXct(NA), length(s))
 
-    # ISO 8601 (Z / with T)
+    # ISO 8601
     iso_idx <- !is.na(s) & grepl("T", s, fixed = TRUE)
     if (any(iso_idx)) {
       tmp <- suppressWarnings(as.POSIXct(
@@ -219,25 +222,10 @@ load_precomputed_metrics <- function(path,
   if (all(is.na(DT$time))) stop("Failed to parse time column into POSIXct.")
 
   # -----------------------------
-  # id (HARD: must not collapse to a single bogus id)
+  # id
   # -----------------------------
-  if (!("id" %in% names(DT))) DT[, id := NA_character_]
-  DT[, id := trimws(as.character(id))]
-  DT[id == "" | is.na(id), id := NA_character_]
-
-  # If id is missing for ALL rows, allow a placeholder but WARN loudly.
-  if (all(is.na(DT$id))) {
-    warning("No usable 'id' column detected (all missing). Setting id='ID-unknown' for all rows.", call. = FALSE)
-    DT[, id := "ID-unknown"]
-  } else {
-    # If some ids missing, drop those rows (cannot safely allocate wear/day without id)
-    n_bad_id <- DT[is.na(id), .N]
-    if (n_bad_id > 0) {
-      warning("Dropping ", n_bad_id, " rows with missing/blank id.", call. = FALSE)
-      DT <- DT[!is.na(id)]
-      if (!nrow(DT)) stop("All rows had missing/blank id; cannot proceed.")
-    }
-  }
+  if (!("id" %in% names(DT))) DT[, id := "ID-unknown"]
+  DT[, id := as.character(id)]
 
   # -----------------------------
   # normalize sex to M/F/All
@@ -255,11 +243,8 @@ load_precomputed_metrics <- function(path,
       s
     }]
   }
-
-  # age
   if ("age" %in% names(DT)) DT[, age := suppressWarnings(as.integer(round(as.numeric(age))))]
 
-  # soft warnings for missing sex/age
   if (!("sex" %in% names(DT)) || all(is.na(DT$sex))) {
     warning("No usable 'sex' column detected. Proceeding with sex='All'.", call. = FALSE)
     DT[, sex := "All"]
@@ -270,10 +255,7 @@ load_precomputed_metrics <- function(path,
   }
 
   # -----------------------------
-  # epoch detection:
-  #   Prefer provided epoch_sec if present and non-NA,
-  #   else detect from time deltas (mode).
-  #   HARD STOP unless epoch_sec is exactly 5 or 60 (and not mixed).
+  # epoch detection (5 or 60 only)
   # -----------------------------
   detect_epoch_mode <- function(tt) {
     tt <- sort(unique(tt))
@@ -293,94 +275,67 @@ load_precomputed_metrics <- function(path,
   }
 
   if (!is.null(ep_user)) {
-    if (length(ep_user) > 1) {
-      stop("Multiple epoch_sec values found in file: ", paste(ep_user, collapse = ", "),
-           ". This system requires exactly one epoch (5 or 60).")
-    }
+    if (length(ep_user) > 1) stop("Multiple epoch_sec values found: ", paste(ep_user, collapse = ", "))
     DT[, epoch_sec := as.integer(ep_user[1])]
     epoch_source <- "provided_epoch_sec"
   } else {
-    epoch_from_time <- detect_epoch_mode(DT$time)
-    DT[, epoch_sec := as.integer(epoch_from_time)]
+    DT[, epoch_sec := as.integer(detect_epoch_mode(time))]
     epoch_source <- "detected_from_time"
   }
 
   ep_final <- unique(na.omit(as.integer(DT$epoch_sec)))
-  if (!length(ep_final) || is.na(ep_final[1])) {
-    stop("Could not determine epoch_sec. Provide an 'epoch_sec' column (5 or 60), or ensure time is regularly spaced.")
-  }
-  if (length(ep_final) > 1) {
-    stop("Mixed epoch_sec detected after parsing: ", paste(ep_final, collapse = ", "),
-         ". This system requires exactly one epoch (5 or 60).")
-  }
-  if (!(ep_final[1] %in% c(5L, 60L))) {
-    stop(paste0(
-      "Unsupported epoch_sec=", ep_final[1], ". This system ONLY supports epoch_sec 5 or 60.\n",
-      "Fix: export 5s or 60s data (or recompute metrics at 5s/60s), and include epoch_sec accordingly."
-    ))
-  }
-
-  # -----------------------------
-  # Require >= 1 numeric metric column (single metric OK)
-  # -----------------------------
-  non_metric <- c("id","time","epoch_sec","sex","age","day","axis1","axis2","axis3")
-  candidate <- setdiff(names(DT), non_metric)
-  if (!length(candidate)) {
-    stop("No candidate metric columns detected. Provide at least one metric column (e.g., enmo, mad, mims_unit, ac, ai, rocam).")
-  }
-  numeric_metrics <- candidate[vapply(DT[, ..candidate], is.numeric, logical(1))]
-  if (!length(numeric_metrics)) {
-    stop("No numeric metric columns detected. Provide at least one numeric metric column (e.g., enmo, mad, mims_unit, ac, ai, rocam).")
-  }
+  if (!length(ep_final) || is.na(ep_final[1])) stop("Could not determine epoch_sec.")
+  if (length(ep_final) > 1) stop("Mixed epoch_sec detected: ", paste(ep_final, collapse = ", "))
+  if (!(ep_final[1] %in% c(5L, 60L))) stop("Unsupported epoch_sec=", ep_final[1], " (only 5 or 60)")
 
   data.table::setorder(DT, id, time)
 
   # -----------------------------
-  # Strict VALID DAY filtering ONLY (no week filter)
-  # Wear minutes computed from UNIQUE epoch timestamps per id×day
-  # Uses day defined from snapped epoch time in UTC
+  # Strict VALID DAY filtering ONLY (NO WEEK FILTER)
+  #   - uses UNIQUE snapped epoch timestamps per id × day_date (day_tz)
+  #   - NEVER trusts any incoming 'day' column; we recompute later
   # -----------------------------
-  apply_valid_day_filter <- function(DT, epoch_sec, valid_day_hours = 16) {
+  apply_valid_day_filter <- function(DT, epoch_sec, valid_day_hours = 16, day_tz = "UTC") {
     ep <- as.integer(epoch_sec)
     rec_min <- ep / 60
 
-    # snap time to epoch grid (UTC) so duplicates within an epoch don't inflate wear
     tnum <- as.numeric(DT$time)
     DT[, time_epoch := as.POSIXct(floor(tnum / ep) * ep, origin="1970-01-01", tz="UTC")]
-    DT[, day_date   := as.Date(time_epoch, tz="UTC")]
+
+    # day boundary determined by day_tz ("" => system tz)
+    DT[, day_date := as.Date(time_epoch, tz = day_tz)]
 
     day_sum <- DT[, .(
-      n_rows_raw    = .N,
-      n_epoch_uniq  = data.table::uniqueN(time_epoch),
-      wear_min      = data.table::uniqueN(time_epoch) * rec_min
-    ), by = .(id, day_date)]
+      n_rows_raw   = .N,
+      n_epoch_uniq = data.table::uniqueN(time_epoch),
+      wear_min     = data.table::uniqueN(time_epoch) * rec_min
+    ), by=.(id, day_date)]
     day_sum[, valid_day := is.finite(wear_min) & wear_min >= (as.numeric(valid_day_hours) * 60)]
 
-    before <- list(
-      n_rows = nrow(DT),
-      n_ids  = data.table::uniqueN(DT$id),
-      n_days = data.table::uniqueN(day_sum[, .(id, day_date)])
-    )
+    keep <- day_sum[valid_day == TRUE, .(id, day_date)]
+    DT2 <- DT[keep, on=.(id, day_date), nomatch = 0L]
 
-    keep_days <- day_sum[valid_day == TRUE, .(id, day_date)]
-    DT2 <- DT[keep_days, on = .(id, day_date), nomatch = 0L]
+    # Recompute canonical day index per id from day_date (dense)
+    DT2[, day := data.table::frank(day_date, ties.method="dense"), by=id]
 
-    # cleanup
-    DT2[, c("day_date","time_epoch") := NULL]
-
-    after <- list(
-      n_rows = nrow(DT2),
-      n_ids  = data.table::uniqueN(DT2$id),
-      n_days = data.table::uniqueN(DT2[, .(id, as.Date(time, tz="UTC"))])
-    )
+    DT2[, c("time_epoch","day_date") := NULL]
 
     meta <- list(
+      day_tz = day_tz,
       valid_day_hours = as.numeric(valid_day_hours),
-      before = before,
-      after  = after
+      before = list(
+        n_rows = nrow(DT),
+        n_ids  = data.table::uniqueN(DT$id),
+        n_days = data.table::uniqueN(day_sum[, .(id, day_date)])
+      ),
+      after = list(
+        n_rows = nrow(DT2),
+        n_ids  = data.table::uniqueN(DT2$id),
+        n_days = data.table::uniqueN(DT2[, .(id, day)])
+      )
     )
 
-    list(DT = DT2, meta = meta)
+    list(DT=DT2, meta=meta)
   }
 
   valid_filter_meta <- NULL
@@ -388,73 +343,74 @@ load_precomputed_metrics <- function(path,
     res <- apply_valid_day_filter(
       DT,
       epoch_sec = ep_final[1],
-      valid_day_hours = valid_day_hours
+      valid_day_hours = valid_day_hours,
+      day_tz = day_tz
     )
     DT <- res$DT
     valid_filter_meta <- res$meta
 
-    if (!nrow(DT)) {
-      stop(
-        "After valid-day filtering, 0 rows remain.\n",
-        "Rule: valid day >= ", valid_day_hours, "h of UNIQUE epoch records.\n",
-        "Tip: check epoch_sec, time parsing, and gaps/duplicates."
-      )
-    }
+    if (!nrow(DT)) stop("After valid-day filtering, 0 rows remain.")
 
-    # -----------------------------
-    # HARD ASSERT (non-negotiable): no sub-16h days remain
-    # -----------------------------
-    ep <- unique(DT$epoch_sec)
-    ep <- ep[!is.na(ep)][1]
+    # HARD ASSERT: no sub-<valid_day_hours> days remain (using same day_tz definition)
+    ep <- as.integer(ep_final[1])
     tnum <- as.numeric(DT$time)
     DT[, time_epoch := as.POSIXct(floor(tnum / ep) * ep, origin="1970-01-01", tz="UTC")]
-    DT[, day_date   := as.Date(time_epoch, tz="UTC")]
+    DT[, day_date := as.Date(time_epoch, tz = day_tz)]
 
-    day_check <- DT[, .(
-      n_epoch_uniq = data.table::uniqueN(time_epoch),
-      wear_min     = data.table::uniqueN(time_epoch) * (ep/60)
-    ), by = .(id, day_date)]
+    chk <- DT[, .(
+      wear_min = data.table::uniqueN(time_epoch) * (ep/60)
+    ), by=.(id, day_date)]
 
-    bad <- day_check[wear_min < as.numeric(valid_day_hours) * 60]
-
+    bad <- chk[wear_min < as.numeric(valid_day_hours)*60]
     if (nrow(bad)) {
       print(bad[order(wear_min)][1:min(.N, 25)])
-      stop(
-        "VALID-DAY ASSERT FAILED: sub-", valid_day_hours,
-        "h day(s) remain after filtering. Printed offending id×day above."
-      )
+      stop("VALID-DAY ASSERT FAILED: sub-", valid_day_hours, "h day(s) remain after filtering.")
     }
 
+    DT[, c("time_epoch","day_date") := NULL]
+  } else {
+    # Even if no filtering, still ensure a canonical day exists for downstream
+    ep <- as.integer(ep_final[1])
+    tnum <- as.numeric(DT$time)
+    DT[, time_epoch := as.POSIXct(floor(tnum / ep) * ep, origin="1970-01-01", tz="UTC")]
+    DT[, day_date := as.Date(time_epoch, tz = day_tz)]
+    DT[, day := data.table::frank(day_date, ties.method="dense"), by=id]
     DT[, c("time_epoch","day_date") := NULL]
   }
 
   # -----------------------------
-  # attach loader metadata (for downstream Output5)
+  # Require >= 1 numeric metric column (single metric OK)
+  # -----------------------------
+  non_metric <- c("id","time","epoch_sec","sex","age","day","axis1","axis2","axis3")
+  candidate <- setdiff(names(DT), non_metric)
+  numeric_metrics <- candidate[vapply(DT[, ..candidate], is.numeric, logical(1))]
+  if (!length(numeric_metrics)) stop("No numeric metric columns detected.")
+
+  # -----------------------------
+  # attach loader metadata
   # -----------------------------
   loader_meta <- list(
-    source_path            = path,
-    source_ext             = ext,
-    n_rows                 = nrow(DT),
-    n_cols                 = ncol(DT),
+    source_path = path,
+    source_ext  = ext,
+    n_rows      = nrow(DT),
+    n_cols      = ncol(DT),
 
     detected_metrics_num   = numeric_metrics,
     n_detected_metrics_num = length(numeric_metrics),
 
-    epoch_sec              = as.integer(ep_final[1]),
-    epoch_source           = epoch_source,
+    epoch_sec    = as.integer(ep_final[1]),
+    epoch_source = epoch_source,
 
-    has_sex                = "sex" %in% names(DT) && any(!is.na(DT$sex)),
-    has_age                = "age" %in% names(DT) && any(!is.na(DT$age)),
+    day_tz       = as.character(day_tz),
 
-    time_min_utc           = as.character(min(DT$time, na.rm = TRUE)),
-    time_max_utc           = as.character(max(DT$time, na.rm = TRUE)),
-    n_unique_id            = data.table::uniqueN(DT$id),
+    time_min     = as.character(min(DT$time, na.rm=TRUE)),
+    time_max     = as.character(max(DT$time, na.rm=TRUE)),
+    n_unique_id  = data.table::uniqueN(DT$id),
 
-    apply_valid_filters    = isTRUE(apply_valid_filters),
-    valid_day_hours        = as.numeric(valid_day_hours),
-    valid_filter_summary   = valid_filter_meta,
+    apply_valid_filters  = isTRUE(apply_valid_filters),
+    valid_day_hours      = as.numeric(valid_day_hours),
+    valid_filter_summary = valid_filter_meta,
 
-    # keep arg for compatibility, but explicitly record it's ignored
     valid_week_days_arg_ignored = as.integer(valid_week_days)
   )
 

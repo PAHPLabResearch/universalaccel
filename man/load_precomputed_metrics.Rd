@@ -8,7 +8,8 @@ load_precomputed_metrics(
   path,
   apply_valid_filters = TRUE,
   valid_day_hours = 16,
-  valid_week_days = 3
+  valid_week_days = 3,
+  day_tz = "UTC"
 )
 }
 \arguments{
@@ -18,19 +19,27 @@ load_precomputed_metrics(
 
 \item{valid_day_hours}{numeric; default 16}
 
-\item{valid_week_days}{integer; deprecated/ignored (kept for backward compatibility)}
+\item{valid_week_days}{integer; DEPRECATED/ignored (kept for backward compatibility)}
+
+\item{day_tz}{character; timezone used to define "day" boundaries.
+\itemize{
+\item Default "UTC" (reproducible)
+\item Use "" to use the system local timezone
+\item Or provide an IANA tz like "America/Chicago"
+}}
 }
 \description{
 Canonical output columns:
-id, time (POSIXct UTC), epoch_sec (5 or 60), sex (M/F/All), age (int),
+id, time (POSIXct), epoch_sec (5 or 60), sex (M/F/All), age (int),
 plus numeric metric cols (any of: ac,enmo,mad,mims_unit,ai,rocam, ...)
+plus: day (dense index per-id based on day_tz)
 }
 \details{
 HARD RULES:
 \itemize{
 \item epoch_sec must be exactly 5 or 60 (single value; not mixed)
 \item if apply_valid_filters=TRUE then valid day is NON-NEGOTIABLE:
-keep ONLY id×day with >= valid_day_hours hours of UNIQUE epoch timestamps
-(week filter removed)
+keep ONLY id×day_date with >= valid_day_hours hours of UNIQUE epoch timestamps
+(NO WEEK FILTER)
 }
 }

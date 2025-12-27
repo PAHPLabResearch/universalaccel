@@ -157,15 +157,20 @@ renv::snapshot()  # whenever dependencies change
 ## 6. What “analysis-ready” means in UA
 
 ### What you provide
-Depending on device type, you provide:
-- A precomputed/processed table already aligned to an epoch and containing metric columns with age and sex columns.
+Running this part necessitates pre-computed data of summary metric(s). Therefore, you provide:
+
+- A pre-computed/processed table already aligned to an epoch and containing metric columns with age and sex columns.
+- Note that the Second part is run on a file whose nonwear time was already removed (choi method was used 
+when generating NHANES comparisons). Ideally one would pass UA part 1 outputs to part 2. 
 
 An “analysis-ready” UA file has:
+
 - consistent time and epoch (`epoch_sec`)
 - consistent metric naming (e.g., `enmo`, `mad`, `mims_unit`, `ac`)
 - enough metadata to interpret results (age/sex when relevant; location label)
 
 In UA, Part 2 analysis commonly produces:
+
 - **daily distributions** (bins; minutes across intensity ranges)
 - **zone summaries** (movement zones from NHANES references)
 - **AA** (Average acceleration) and **IG** (Intensity gradient)
@@ -174,20 +179,24 @@ In UA, Part 2 analysis commonly produces:
 ## 7. Daily summaries and binned distributions (bins, zones)
 
 Two common analysis constructs:
+
 - **AA (Average acceleration):** the time-weighted mean intensity over the day.
 - **IG (Intensity gradient):** the slope from regressing log(time-in-bin) on log(intensity-bin-midpoint).
 
 Conceptually:
+
 - Bins summarize *how much time* is accumulated in each intensity range.
 - Zones group bins into interpretable “movement zones” based on normative boundaries.
 
 ## 8. NHANES references (National Health and Nutrition Examination Survey)
 
 NHANES references provide:
+
 - **normative zone boundaries** (per metric, epoch, NHANES age group, and sex when available)
 - **normative percentiles** for AA (Average acceleration) and IG (Intensity gradient), by NHANES age ranges (e.g., Age 3–19 and Age 20–80)
 
 UA uses NHANES references to answer:
+
 - “Where does this person-day rank relative to a U.S. reference?”
 - “What would other metrics look like at the same **anchor** percentile?” (anchor-conditioned lookup)
 
@@ -263,6 +272,7 @@ This manual assumes the Part 2 runner produces:
 ### Output2 — Zone summary + NHANES anchors and “equated” values
 **Purpose:** summarize minutes and intensity within zones; attach NHANES references.  
 **Common variables:**
+
 - `minutes_in_zone` (*observed minutes*)
 - `observed_intensity` (*observed time-weighted mean within zone*)
 - `nhanes_anchor_*` (*NHANES reference values for the same metric/anchor*)
@@ -271,18 +281,22 @@ This manual assumes the Part 2 runner produces:
 ### Output3 — Percentile positioning (AA + IG), anchor-conditioned NHANES lookup
 **Purpose:** (1) find your anchor percentile; (2) report NHANES values for other metrics at that same anchor percentile.  
 **Common variables:**
+
 - `anchor_value_obs` (*observed AA or IG for the anchor metric*)
 - `anchor_nearest_centile` (*nearest NHANES centile for that value*)
 - `nhanes_<m>_value_at_anchor_centile` (*NHANES value for metric m at that same centile under the same anchor panel*)
 - `nhanes_<m>_centile_used` (*centile actually used; should match anchor centile unless snapped*)
 
 ### Output4 — Weekly rollups (optional)
+
 **Purpose:** quick weekly averaging across days.  
 **Common variables:**
 - `week`, `n_days`, `overall_intensity_mean`, `ig_slope_mean`
 
 ### Output5 — Run report (plain language)
+
 **Purpose:** a plain-language summary of what ran, what was produced, and how to interpret the columns.
 
 ### Reference
+
 **Part1 Implementation** https://doi.org/10.1123/jmpb.2025-0024
