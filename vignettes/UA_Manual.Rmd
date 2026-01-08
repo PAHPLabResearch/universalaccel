@@ -26,14 +26,14 @@ knitr::opts_chunk$set(
 
 1. What UA is (universal accelerometry pipeline)  
 2. Inputs and expectations (file formats, columns, epochs)  
-3. Running metric generation (`accel_summaries`)  
+3. Summarizing raw acceleration (`accel_summaries`)  
 4. Output files and variable list (epoch-level metrics)  
 
 **Part 2 — Analysis**
 
-5. What “analysis-ready” means in UA (harmonized, tidy outputs)  
-6. Daily summaries and binned distributions (bins, zones)  
-7. NHANES references (National Health and Nutrition Examination Survey)  
+5. What “analysis-ready” means in UA (harmonized outputs)  
+6. Daily summaries and bin distributions (intensity zones)  
+7. NHANES references (Comparing observed volume and IG to normative values)  
 8. Running Part 2 on a precomputed demo file (`ua_analyze_precomputed`)  
 9. Output tables (Output1–Output5) and variable lists  
 
@@ -127,7 +127,15 @@ filecheck <- function(pattern, index = 1) {
 }
 
 filecheck("UA_actigraph", 1) |>
-  dplyr::select(1:6) |>     
+  dplyr::select(
+    time,
+    ID,
+    AI,
+    Vector.Magnitude,
+    ENMO,
+    MAD,
+    MIMS_UNIT
+  ) |>
   knitr::kable()
 
 ```
@@ -253,7 +261,7 @@ if (length(runs)) {
   preview <- function(pattern) {
     f <- list.files(part2_dir, pattern = pattern, full.names = TRUE)
     if (!length(f)) return(NULL)
-    readr::read_csv(f[1], n_max = 5, show_col_types = FALSE,
+    readr::read_csv(f[1], n_max = 10, show_col_types = FALSE,
                     col_types = readr::cols(sex = readr::col_character(),
                                             sex_name = readr::col_character(),
                                             .default = readr::col_guess()))
@@ -281,7 +289,15 @@ This manual assumes the Part 2 runner produces:
 - `intensity distribution zones` (*zone labels*)
 
 ```{r part2_preview1, echo=FALSE, message=FALSE, warning=FALSE}
-knitr::kable(preview_n(1) |> dplyr::select(1:9))
+cols_bins <- c(
+  "id",  "sex",  "age",  "metric",  "epoch_sec",  "bin_i",  "day",  "midpoint",  "time_bin_min", "cm_time_min"
+)
+
+knitr::kable(
+  preview_n(1) |>
+    dplyr::select(any_of(cols_bins))
+)
+
 ```
 ### Output2 — Distribution summary and metric conversions
 **Purpose:** summarize minutes and intensity within zones; attach NHANES references.  
@@ -293,7 +309,15 @@ knitr::kable(preview_n(1) |> dplyr::select(1:9))
 - `equated_*` (*NHANES mean/SE for other metrics mapped onto the same anchor-zone definition*)
 
 ```{r part2_preview2, echo=FALSE, message=FALSE, warning=FALSE}
-knitr::kable(preview_n(2) |> dplyr::select(1:9))
+cols_bins2 <- c(
+  "id","	day",	"anchor",	"intensity_zone",	"observed_mean_intensity", "nhanes_anchor_mean_nhanesw"
+)
+
+knitr::kable(
+  preview_n(2) |>
+    dplyr::select(any_of(cols_bins2))
+)
+
 ```
 ### Output3 — Percentile positioning (Volume + IG), NHANES reference lookup
 **Purpose:** (1) find your anchor percentile; (2) report NHANES values for other metrics at that same anchor percentile.  
@@ -305,7 +329,14 @@ knitr::kable(preview_n(2) |> dplyr::select(1:9))
 - `nhanes_<m>_centile_used` (*centile actually used; should match anchor centile unless snapped*)
 
 ```{r part2_preview3, echo=FALSE, message=FALSE, warning=FALSE}
-knitr::kable(preview_n(3) |> dplyr::select(1:9))
+cols_bins3 <- c(
+  "id",	"day",	"sex",	"age	","age_range",	"anchor",	"stat",	"anchor_value_observed"
+)
+
+knitr::kable(
+  preview_n(3) |>
+    dplyr::select(any_of(cols_bins3))
+)
 ```
 ### Output4 — Weekly summaries
 
@@ -314,7 +345,14 @@ knitr::kable(preview_n(3) |> dplyr::select(1:9))
 - `week`, `n_days`, `overall_intensity_mean`, `ig_slope_mean`
 
 ```{r part2_preview4, echo=FALSE, message=FALSE, warning=FALSE}
-knitr::kable(preview_n(4) |> dplyr::select(1:9))
+cols_bins4 <- c(
+  "id",	"metric",	"period_type",	"period_id"	,	"observed_total_minutes",	"observed_mean_intensity",	"observed_ig"
+  )
+
+knitr::kable(
+  preview_n(4) |>
+    dplyr::select(any_of(cols_bins4))
+)
 ```
 
 ### Output5 — Run report (log)
