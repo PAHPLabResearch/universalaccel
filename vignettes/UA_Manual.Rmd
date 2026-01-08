@@ -15,7 +15,8 @@ knitr::opts_chunk$set(
   collapse = TRUE,
   comment  = "#>",
   message  = FALSE,
-  warning  = FALSE
+  warning  = FALSE,
+  echo     = FALSE   
 )
 ```
 
@@ -48,9 +49,9 @@ knitr::opts_chunk$set(
 - **ROCAM** (*Rate of Change Acceleration Movement*): change-based activity metric derived from successive acceleration movement samples.
 - **AC** (*ActiGraph counts*): traditional “counts”.
 - **NHANES** (*National Health and Nutrition Examination Survey*): U.S. survey used here as the reference population for zone boundaries and percentile tables.
-- **Anchor** (*default metric scale for conditioning*): the metric context used to define zones and percentiles; other metrics can be **equated** onto this anchor via **equipercentile** mapping.
-- **Epoch** (*aggregation window*): the time length used to summarize raw samples into rows (e.g., 5 seconds or 60 seconds).
-- **AA** (*Average acceleration*): the daily time-weighted mean of the intensity distribution (computed from bin midpoints × minutes in bin).
+- **Anchor** (*Default metric scale for conditioning*): the metric context used to define zones and percentiles; other metrics can be **equated** onto this anchor via **equipercentile** mapping.
+- **Epoch** (*Aggregation window*): the time length used to summarize raw samples into rows (e.g., 5 seconds or 60 seconds).
+- **AA** (*Average acceleration*/*Volume*): the daily time-weighted mean of the intensity distribution (computed from bin midpoints × minutes in bin).
 - **IG** (*Intensity gradient*): the slope from regressing log(time in bin) on log(intensity midpoint); more negative means a steeper drop-off at higher intensities.
 
 
@@ -82,15 +83,17 @@ Depending on device type, you provide:
 
 ## 3. Quick Start: generate metrics with `?accel_summaries()` (epoch-level outputs)
 
-```{r part1_quickstart}
+```{r part1_prepare, include=FALSE}
 library(universalaccel)
 
 # Locate sample data bundled with the package (ActiGraph example)
 actigraph_path <- system.file("extdata/actigraph", package = "universalaccel")
 output_dir <- tempdir()
+```
 
-# Run metric generation. 
-# The set up can hold other arguments see more:?universalaccel::accel_summaries()
+```{r part1_quickstart, echo=TRUE,message=FALSE, warning=FALSE}
+# Run Part 1 metric generation. 
+# See more:?universalaccel::accel_summaries()
 accel_summaries(
   device        = "actigraph", #define device type
   data_folder   = actigraph_path, # data folder for batch processing
@@ -106,9 +109,10 @@ accel_summaries(
 
 ## 4. Output files and variable list (epoch-level metrics)
 
-After `accel_summaries()`, you will typically see one or more CSV files written to `output_folder`.
+After running part 1, you will typically see one or more CSV files written to `output_folder`.
 
-```{r part1_list_outputs}
+```{r part1_list_outputs, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
 # List generated CSVs
 files <- list.files(output_dir, pattern = "UA_actigraph", full.names = TRUE)
 # Processed files
@@ -117,13 +121,14 @@ basename(files)
 filecheck <- function(pattern, index = 1) {
   f <- list.files(output_dir, pattern = pattern, full.names = TRUE)
   if (!length(f)) stop("No files found.")
-
   if (index > length(f)) stop("Index out of range.")
 
-  readr::read_csv(f[index], n_max = 3)
+  readr::read_csv(f[index], n_max = 3, show_col_types = FALSE)
 }
 
-filecheck("UA_actigraph", index = 1)
+filecheck("UA_actigraph", 1) |>
+  dplyr::select(1:6) |>     
+  knitr::kable()
 
 ```
 
@@ -180,7 +185,7 @@ In UA, Part 2 analysis commonly produces:
 
 Two common analysis constructs:
 
-- **AA (Average acceleration):** the time-weighted mean intensity over the day.
+- **AA (Average acceleration/Volume):** the time-weighted mean intensity over the day.
 - **IG (Intensity gradient):** the slope from regressing log(time-in-bin) on log(intensity-bin-midpoint).
 
 Conceptually:
@@ -208,10 +213,10 @@ UA includes a small but “analysis-capable” precomputed demo file under:
 
 This demo is intentionally larger than the tiny raw samples (so AA, IG, and weekly rollups are meaningful).
 
-```{r part2_quickstart}
+```{r part2_quickstart, include=FALSE}
 library(universalaccel)
 library(readr)
-
+library(dplyr)
 # Precomputed demo file shipped with the package
 pre_base <- "UA_FLASH_sample"
 pre_csv  <- system.file(
@@ -219,81 +224,100 @@ pre_csv  <- system.file(
   paste0(pre_base, ".csv"),
   package = "universalaccel"
 )
-
-stopifnot(nzchar(pre_csv))  # ensures the file exists in the installed package
+stopifnot(nzchar(pre_csv))
 
 # Where to write Part 2 outputs
-out_root <- tempdir()
+out_root <- tempdir()                 
+```
 
-# Run Part 2 analysis (writes "<pre_base>_UA_outputs" under out_root)
+# Run Part 2 analysis 
+```{r part2_run, echo=TRUE}
+library(universalaccel)
+
 analysis <- ua_analyze_precomputed(
-  in_path     = pre_csv,
-  out_dir     = out_root,
+  in_path     = pre_csv, # Specify where your dataset is at
+  out_dir     = out_root,# Specify output directory
   location    = "ndw",
   make_weekly = TRUE,
   overwrite   = TRUE
 )
-
-# Inspect files written (short names only to avoid overflow)
-part2_dir <- file.path(out_root, paste0(pre_base, "_UA_outputs"))
-basename(list.files(part2_dir, full.names = TRUE))
-
-# Safely preview outputs
-preview <- function(pattern) {
-  f <- list.files(part2_dir, pattern = pattern, full.names = TRUE)
-  if (length(f)) read_csv(
-    f[1],
-    n_max = 5,
-    col_types = cols(
-      sex      = col_character(),
-      sex_name = col_character()
-    )
-  )
-}
-
-preview("UA_Output1_BINS")
-preview("UA_Output2_SUMMARY")
-preview("UA_Output3_PERCENTILES")
-preview("UA_Output4_WEEKLY")
 ```
+
+```{r part2_preview_internal, echo=FALSE, message=FALSE, warning=FALSE}
+run_root <- file.path(out_root, "UA_runs")
+runs <- list.dirs(run_root, recursive = FALSE, full.names = TRUE)
+if (length(runs)) {
+  runs_sorted <- runs[order(basename(runs))]
+  part2_dir <- tail(runs_sorted, 1)
+
+  preview <- function(pattern) {
+    f <- list.files(part2_dir, pattern = pattern, full.names = TRUE)
+    if (!length(f)) return(NULL)
+    readr::read_csv(f[1], n_max = 5, show_col_types = FALSE,
+                    col_types = readr::cols(sex = readr::col_character(),
+                                            sex_name = readr::col_character(),
+                                            .default = readr::col_guess()))
+  }
+
+preview_n <- function(n) {
+  pattern <- sprintf("UA_Output%d_", n)
+  preview(pattern)
+}
+}
+```
+
 
 ## 10. Output tables (Output1–Output5) and variable lists
 
 This manual assumes the Part 2 runner produces:
 
-### Output1 — Bins (distribution)
+### Output1 — Daily intensity distributions 
 **Purpose:** minute distribution across bins, with zone assignment.  
 **Common variables:**
+
 - `id`, `day`, `epoch_sec`, `location`, `metric`
 - `lower`, `upper`, `midpoint` (*bin boundaries*)
 - `time_bin_min` (*minutes in bin*)
-- `intensity_zone_raw` (*zone label*)
+- `intensity distribution zones` (*zone labels*)
 
-### Output2 — Zone summary + NHANES anchors and “equated” values
+```{r part2_preview1, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::kable(preview_n(1) |> dplyr::select(1:9))
+```
+### Output2 — Distribution summary and metric conversions
 **Purpose:** summarize minutes and intensity within zones; attach NHANES references.  
 **Common variables:**
 
 - `minutes_in_zone` (*observed minutes*)
 - `observed_intensity` (*observed time-weighted mean within zone*)
-- `nhanes_anchor_*` (*NHANES reference values for the same metric/anchor*)
+- `nhanes_anchor_*` (*NHANES reference metric whose scale was used to map/equate other summary metrics*)
 - `equated_*` (*NHANES mean/SE for other metrics mapped onto the same anchor-zone definition*)
 
-### Output3 — Percentile positioning (AA + IG), anchor-conditioned NHANES lookup
+```{r part2_preview2, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::kable(preview_n(2) |> dplyr::select(1:9))
+```
+### Output3 — Percentile positioning (Volume + IG), NHANES reference lookup
 **Purpose:** (1) find your anchor percentile; (2) report NHANES values for other metrics at that same anchor percentile.  
 **Common variables:**
 
-- `anchor_value_obs` (*observed AA or IG for the anchor metric*)
+- `anchor_value_obs` (*observed Volume or IG for the anchor metric*)
 - `anchor_nearest_centile` (*nearest NHANES centile for that value*)
 - `nhanes_<m>_value_at_anchor_centile` (*NHANES value for metric m at that same centile under the same anchor panel*)
 - `nhanes_<m>_centile_used` (*centile actually used; should match anchor centile unless snapped*)
 
-### Output4 — Weekly rollups (optional)
+```{r part2_preview3, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::kable(preview_n(3) |> dplyr::select(1:9))
+```
+### Output4 — Weekly summaries
 
 **Purpose:** quick weekly averaging across days.  
 **Common variables:**
 - `week`, `n_days`, `overall_intensity_mean`, `ig_slope_mean`
 
-### Output5 — Run report (plain language)
+```{r part2_preview4, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::kable(preview_n(4) |> dplyr::select(1:9))
+```
+
+### Output5 — Run report (log)
 
 **Purpose:** a plain-language summary of what ran, what was produced, and how to interpret the columns.
 

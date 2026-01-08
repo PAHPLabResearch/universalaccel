@@ -9,11 +9,12 @@ ua_analyze_precomputed(
   out_dir,
   location = "ndw",
   make_weekly = TRUE,
-  overwrite = TRUE
+  overwrite = TRUE,
+  fail_fast = FALSE
 )
 }
 \arguments{
-\item{in_path}{Path to a precomputed file OR a folder containing one.}
+\item{in_path}{Path to a precomputed file OR a folder containing files.}
 
 \item{out_dir}{Output directory where UA outputs will be written.}
 
@@ -22,9 +23,11 @@ ua_analyze_precomputed(
 \item{make_weekly}{If TRUE, writes weekly rollups (Output4).}
 
 \item{overwrite}{If TRUE, overwrite existing outputs; otherwise create timestamped variants.}
+
+\item{fail_fast}{If TRUE, stop on first file error. If FALSE, continue and report failures.}
 }
 \value{
-Invisibly returns whatever \code{ua_run_end_to_end()} returns.
+Invisibly returns a data.table index (one row per file) with status and output folder.
 }
 \description{
 Runs the Part II workflow on \emph{precomputed} epoch-level files (e.g., outputs
@@ -35,6 +38,12 @@ percentiles, optional weekly rollups, and a plain-language report).
 \code{in_path} may be either:
 \itemize{
 \item a supported file path (csv/txt/xlsx/xls/rds), or
-\item a folder containing at least one supported file (newest file is used).
+\item a folder containing one or more supported files.
+}
+
+Folder behavior (important):
+\itemize{
+\item Every file in the folder is processed independently (no combining).
+\item Each file creates its own output folder (handled inside ua_run_end_to_end()).
 }
 }

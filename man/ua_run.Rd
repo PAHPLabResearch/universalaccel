@@ -2,18 +2,19 @@
 % Please edit documentation in R/ua_run.R
 \name{ua_run}
 \alias{ua_run}
-\title{Run universalaccel precomputed workflow end-to-end (legacy name)}
+\title{Run universalaccel precomputed workflow end-to-end}
 \usage{
 ua_run(
   in_path,
   out_dir,
   location = "ndw",
   make_weekly = TRUE,
-  overwrite = TRUE
+  overwrite = TRUE,
+  fail_fast = FALSE
 )
 }
 \arguments{
-\item{in_path}{Path to a precomputed file OR a folder containing one.}
+\item{in_path}{Path to a precomputed file OR a folder containing files.}
 
 \item{out_dir}{Output directory where UA outputs will be written.}
 
@@ -22,6 +23,8 @@ ua_run(
 \item{make_weekly}{If TRUE, writes weekly rollups (Output4).}
 
 \item{overwrite}{If TRUE, overwrite existing outputs; otherwise create timestamped variants.}
+
+\item{fail_fast}{If TRUE, stop on first file error. If FALSE, continue and report failures.}
 }
 \description{
 \code{ua_run()} is kept as a stable alias for \code{ua_analyze_precomputed()}.

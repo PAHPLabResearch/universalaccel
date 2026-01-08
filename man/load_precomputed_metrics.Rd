@@ -28,18 +28,9 @@ load_precomputed_metrics(
 \item Or provide an IANA tz like "America/Chicago"
 }}
 }
+\value{
+data.table with canonical columns and attached attribute "ua_loader_meta"
+}
 \description{
-Canonical output columns:
-id, time (POSIXct), epoch_sec (5 or 60), sex (M/F/All), age (int),
-plus numeric metric cols (any of: ac,enmo,mad,mims_unit,ai,rocam, ...)
-plus: day (dense index per-id based on day_tz)
-}
-\details{
-HARD RULES:
-\itemize{
-\item epoch_sec must be exactly 5 or 60 (single value; not mixed)
-\item if apply_valid_filters=TRUE then valid day is NON-NEGOTIABLE:
-keep ONLY id×day_date with >= valid_day_hours hours of UNIQUE epoch timestamps
-(NO WEEK FILTER)
-}
+Load precomputed metric time-series for binning / IG (robust messy inputs)
 }
