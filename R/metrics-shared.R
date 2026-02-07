@@ -19,34 +19,40 @@ calculate_mims <- function(df_cal, file_path, epoch_sec, dynamic_range = c(-8, 8
 }
 
 #' @export
-# STRICT AI: require exactly `sample_rate` samples in each included second
 calculate_ai <- function(df_cal, file_path, epoch_sec, sample_rate = 100) {
   tryCatch({
     message("  [AI] epoch=", epoch_sec, "s")
+
     df <- df_cal %>%
       dplyr::rename(Index = time) %>%
-      dplyr::mutate(Index = lubridate::floor_date(Index, "second"))
+      dplyr::mutate(sec = lubridate::floor_date(Index, "second"))
 
     valid_sec <- df %>%
-      dplyr::count(sec = Index, name = "n") %>%
+      dplyr::count(sec, name = "n") %>%
       dplyr::filter(n == sample_rate) %>%
       dplyr::pull(sec)
     if (!length(valid_sec)) return(NULL)
 
+    df2 <- df %>%
+      dplyr::filter(sec %in% valid_sec) %>%
+      dplyr::select(-sec)
+
+    sigma0_value <- ActivityIndex::Sigma0(df2, hertz = sample_rate)
+
     ActivityIndex::computeActivityIndex(
-      df %>% dplyr::filter(Index %in% valid_sec),
-      sigma0 = ActivityIndex::Sigma0(
-        df %>% dplyr::filter(Index %in% valid_sec),
-        hertz = sample_rate
-      ),
-      epoch = epoch_sec,
-      hertz = sample_rate
+      df2,
+      sigma0 = sigma0_value,
+      epoch  = epoch_sec,
+      hertz  = sample_rate
     ) %>%
       dplyr::rename(time = RecordNo) %>%
-      dplyr::mutate(time = snap_to_epoch(time, epoch_sec),
-                    ID   = clean_id(file_path))
+      dplyr::mutate(
+        time = snap_to_epoch(time, epoch_sec),
+        ID   = clean_id(file_path)
+      )
   }, error = function(e) NULL)
 }
+
 #' @export
 calculate_activity_counts <- function(df_cal, file_path, epoch_sec, sample_rate = 100) {
   tryCatch({
