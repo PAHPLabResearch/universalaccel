@@ -101,7 +101,7 @@ accel_summaries(
   data_folder   = actigraph_path, # data folder for batch processing
   output_folder = output_dir, # output folder
   epochs        = 60, # can optionally compute at many epochs c( 1, 5, 60)
-  sample_rate   = 100,# adjust as needed (Note that for COUNTS >30 is required)
+  sample_rate   = 100,# adjust as needed (Note that for COUNTS >=30 is required)
   dynamic_range = c(-8, 8), # adjust as needed
   metrics       = c("MIMS","ENMO","MAD","COUNTS","AI","ROCAM"),
   apply_nonwear = TRUE
