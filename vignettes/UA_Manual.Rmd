@@ -61,25 +61,27 @@ knitr::opts_chunk$set(
 
 ## 1. What UA is (universalaccel)
 
-**universalaccel (UA)** is an R pipeline for computing harmonized accelerometer summary metrics across multiple devices (Tested on: ActiGraph, Axivity, GENEActiv). The goal is to make raw accelerometer data comparable by producing standardized, epoch-level outputs with consistent naming, time handling, and reproducible settings.
+**universalaccel (UA)** is an R pipeline for computing harmonized accelerometer summary metrics across multiple devices (Tested on: ActiGraph, Axivity, GENEActiv devices proprietary outputs, but there is an option of processing generic outputs from other devices (eg. triaxial data in csv, rds formats, etc). The goal is to make raw accelerometer data comparable by producing standardized, epoch-level outputs with consistent naming, time handling, and reproducible settings.
 
 ### UA tested files and order of operations:
 
-- ActiGraph (GT3X), .gt3x raw data is passed through `?agcounts::agcalibrate()` first and metrics are computed.
+- ActiGraph (GT3X), .gt3x raw data is passed through `?agcounts::agcalibrate()` first for autocalibration and metrics are computed.
 - Axivity (AX3), .resampled.CSV is autocalibrated in OmGui, so metrics are directly computed.
 - GeneActiv, .bin raw data is passed through `?GENEAread::recalibrate()` first and metrics are computed.
+- generic, the workflow accepts files from other devices in formats (csv, csv.gz, rds, rda/RData, xlsx/xls, parquet, feather) provided that they have four columns indicating (time, and triaxial values (X, Y, Z) that are regularly sampled). For autocalibration, generic data uses the agcalibrate() function of the agcounts.  
 - Note that this workflow does not eliminate any file based on the threshold of calibration error.
 
 ## 2. Inputs and expectations (file formats, columns, epochs)
 
 ### What you provide
 Depending on device type, you provide:
-- Raw device files (ActiGraph `.gt3x`, Axivity `resampled`.csv`, GENEActiv `.bin`)
+- Raw device files (ActiGraph `.gt3x`, Axivity `resampled`.csv`, GENEActiv `.bin`, and generic formats)
 
 ### Key expectations
-- A consistent alignment ofmetric at the selected epoch length (`epoch_sec`; commonly 5 seconds or 60 seconds).
+- A consistent alignment of metric at the selected epoch length (`epochs`; commonly 5 seconds or 60 seconds).
 - Correct sample rate and dynamic range for raw devices as configured (or when required by some summary metrics).
-- Consistent timezone handling (typically this is handled by device software but it is configurable here).
+- Consistent timezone handling (typically this is handled by device software but it is configurable here [example argument: tz = "UTC"]).
+- Optional autocalibration for generic devices (generic_autocalibrate = "True")
 
 ## 3. Quick Start: generate metrics with `?accel_summaries()` (epoch-level outputs)
 
@@ -95,15 +97,18 @@ output_dir <- tempdir()
 # Run Part 1 metric generation. 
 # See more:?universalaccel::accel_summaries()
 accel_summaries(
-  device        = "actigraph", #define device type
+  device        = "actigraph", #define device (axivity, geneactiv or generic) 
   data_folder   = actigraph_path, # data folder for batch processing
   output_folder = output_dir, # output folder
-  epochs        = 60,
-  sample_rate   = 100,
-  dynamic_range = c(-8, 8),
+  epochs        = 60, # can optionally compute at many epochs c( 1, 5, 60)
+  sample_rate   = 100,# adjust as needed (Note that for COUNTS >30 is required)
+  dynamic_range = c(-8, 8), # adjust as needed
   metrics       = c("MIMS","ENMO","MAD","COUNTS","AI","ROCAM"),
   apply_nonwear = TRUE
-) 
+  
+# other arguments including (generic_autocalibrate = "True/False",
+# generic_verbose= TRUE/FALSE, and tz = "timezone") can be added. 
+)
 
 ```
 
