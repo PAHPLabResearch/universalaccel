@@ -14,7 +14,7 @@ read_and_calibrate_axivity <- function(file_path, sample_rate = 100, tz = "UTC")
     ) |>
     dplyr::filter(!is.na(time) & is.finite(X) & is.finite(Y) & is.finite(Z)) |>
     dplyr::arrange(time)
-  
+
   n  <- nrow(df)
   if (!n) stop("No samples after read: ", basename(file_path))
   t0 <- lubridate::floor_date(df$time[1], "second")

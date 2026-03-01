@@ -2,7 +2,7 @@
 % Please edit documentation in R/driver.R
 \name{accel_summaries}
 \alias{accel_summaries}
-\title{Summarize accelerometer files by device (selectable metrics; classic filenames)}
+\title{Summarize accelerometer sensor data derived from different devices}
 \usage{
 accel_summaries(
   device,
@@ -13,11 +13,14 @@ accel_summaries(
   dynamic_range = c(-8, 8),
   apply_nonwear = FALSE,
   metrics = c("MIMS", "AI", "COUNTS", "ENMO", "MAD", "ROCAM"),
-  tz = "UTC"
+  tz = "UTC",
+  generic_autocalibrate = c("auto", "true", "false"),
+  generic_units = c("auto", "g", "m/s2"),
+  generic_verbose = FALSE
 )
 }
 \arguments{
-\item{device}{"actigraph", "axivity", or "geneactiv"}
+\item{device}{"actigraph", "axivity", "geneactiv", or "generic"}
 
 \item{data_folder}{Input folder of native files}
 
@@ -29,15 +32,21 @@ accel_summaries(
 
 \item{dynamic_range}{g-range for MIMS (length-2, e.g., c(-8, 8))}
 
-\item{apply_nonwear}{Logical; if TRUE, compute Choi flags using PhysicalActivity::wearingMarking()
-(epoch-aware via perMinuteCts = 60/epoch), then DROP nonwear rows.
-Output keeps \code{choi_nonwear} column but it is always FALSE (no TRUEs written).}
+\item{apply_nonwear}{Logical; if TRUE, compute Choi flags (requires Vector.Magnitude).
+For generic runs, if Vector.Magnitude is not present because COUNTS wasn't requested,
+UA will attempt to compute COUNTS internally (only if Hz supports it) to obtain VM.}
 
 \item{metrics}{Character vector of metrics to compute. Any of:
 c("MIMS","AI","COUNTS","ENMO","MAD","ROCAM"). Defaults to all.}
 
 \item{tz}{Timezone for timestamps (passed to loaders)}
+
+\item{generic_autocalibrate}{For device="generic": "auto","true","false"}
+
+\item{generic_units}{For device="generic": "auto","g","m/s2"}
+
+\item{generic_verbose}{For device="generic": extra messages}
 }
 \description{
-Summarize accelerometer files by device (selectable metrics; classic filenames)
+Summarize accelerometer sensor data derived from different devices
 }
