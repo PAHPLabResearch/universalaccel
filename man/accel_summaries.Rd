@@ -60,7 +60,9 @@ c("MIMS","AI","COUNTS","ENMO","MAD","ROCAM"). Defaults to all.}
 \details{
 Time writing policy:
 \itemize{
+\item internal computations preserve loader-returned instants
 \item final CSV timestamps are WRITTEN AS CHARACTER in the user-requested \code{tz}
-\item this avoids silent UTC/Z serialization on export
+\item logs also display timestamps in the user-requested \code{tz}
+\item timezone conversion for display/export uses lubridate::with_tz()
 }
 }

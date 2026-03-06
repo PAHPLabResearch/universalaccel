@@ -9,8 +9,10 @@
 #' - writes one professional .txt log for the run
 #'
 #' Time writing policy:
+#' - internal computations preserve loader-returned instants
 #' - final CSV timestamps are WRITTEN AS CHARACTER in the user-requested `tz`
-#' - this avoids silent UTC/Z serialization on export
+#' - logs also display timestamps in the user-requested `tz`
+#' - timezone conversion for display/export uses lubridate::with_tz()
 #'
 #' @param device "actigraph", "axivity", "geneactiv", or "generic"
 #' @param data_folder Input folder of native files
@@ -49,11 +51,41 @@ accel_summaries <- function(device, data_folder, output_folder,
 
   stopifnot(is.character(tz), length(tz) == 1, nzchar(tz))
 
+  # Validate timezone early
+  tz_ok <- tryCatch({
+    x <- as.POSIXct("1970-01-01 00:00:00", tz = tz)
+    !is.na(x)
+  }, error = function(e) FALSE)
+
+  if (!isTRUE(tz_ok)) {
+    stop("Invalid timezone supplied to `tz`: ", tz)
+  }
+
   if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
   `%||%` <- function(x, y) if (is.null(x) || length(x) == 0) y else x
 
   counts_supported_hz <- function(sr) sr %in% c(30,40,50,60,70,80,90,100)
+
+  # ---------------------------------------------------------------------------
+  # time helpers
+  # ---------------------------------------------------------------------------
+  force_posix_time <- function(x) {
+    if (inherits(x, "POSIXt")) return(x)
+    y <- suppressWarnings(as.POSIXct(x, origin = "1970-01-01", tz = "UTC"))
+    y
+  }
+
+  format_time_in_tz <- function(x, tz_out, fmt = "%Y-%m-%d %H:%M:%OS3") {
+    x <- force_posix_time(x)
+    if (!length(x)) return(character())
+    out <- rep(NA_character_, length(x))
+    ok <- !is.na(x)
+    if (any(ok)) {
+      out[ok] <- format(lubridate::with_tz(x[ok], tzone = tz_out), format = fmt, tz = tz_out)
+    }
+    out
+  }
 
   # ---------------------------------------------------------------------------
   # log helpers
@@ -164,7 +196,7 @@ accel_summaries <- function(device, data_folder, output_folder,
     vm_epoch <- joined |>
       dplyr::transmute(
         id = ID,
-        time = time,
+        time = force_posix_time(time),
         vector_magnitude = Vector.Magnitude
       ) |>
       dplyr::distinct(id, time, .keep_all = TRUE) |>
@@ -184,6 +216,7 @@ accel_summaries <- function(device, data_folder, output_folder,
     )
 
     joined |>
+      dplyr::mutate(time = force_posix_time(time)) |>
       dplyr::left_join(
         dplyr::select(vm_flag, id, time, choi_nonwear),
         by = c("ID" = "id", "time" = "time")
@@ -217,6 +250,8 @@ accel_summaries <- function(device, data_folder, output_folder,
     "",
     "OUTPUT TIME WRITING POLICY",
     paste0("  final CSV timestamps are written as local clock text in tz = ", tz),
+    "  logs also display timestamps in the requested tz",
+    "  timezone conversion for display/export uses lubridate::with_tz()",
     "  this avoids silent UTC/Z serialization in exported CSV files",
     ""
   )
@@ -272,13 +307,15 @@ accel_summaries <- function(device, data_folder, output_folder,
       )
       if (is.null(df_cal)) return(NULL)
 
+      df_cal$time <- force_posix_time(df_cal$time)
+
       message("  [LOAD] ok: n=", nrow(df_cal))
 
       spec <- attr(df_cal, "ua_time_spec")
       rep_lines <- attr(df_cal, "ua_time_report")
 
-      first_time_chr <- if (nrow(df_cal)) format(df_cal$time[1], tz = tz, format = "%Y-%m-%d %H:%M:%OS3") else NA_character_
-      last_time_chr  <- if (nrow(df_cal)) format(df_cal$time[nrow(df_cal)], tz = tz, format = "%Y-%m-%d %H:%M:%OS3") else NA_character_
+      first_time_chr <- if (nrow(df_cal)) format_time_in_tz(df_cal$time[1], tz_out = tz) else NA_character_
+      last_time_chr  <- if (nrow(df_cal)) format_time_in_tz(df_cal$time[nrow(df_cal)], tz_out = tz) else NA_character_
 
       # detailed per-file section
       if (!is.null(rep_lines) && length(rep_lines)) {
@@ -289,6 +326,7 @@ accel_summaries <- function(device, data_folder, output_folder,
         append_detail(paste0("  time model            : ", spec$model %||% NA_character_))
         append_detail(paste0("  source_tz_detected    : ", if (isTRUE(spec$source_tz_detected)) "yes" else "no"))
         append_detail(paste0("  source_tz             : ", spec$source_tz %||% NA_character_))
+        append_detail(paste0("  compute_tz            : ", spec$compute_tz %||% NA_character_))
         append_detail(paste0("  output_tz             : ", spec$output_tz %||% tz))
         append_detail(paste0("  tz_rule               : ", spec$tz_rule %||% NA_character_))
         append_detail(paste0("  grid_action           : ", spec$grid_action %||% NA_character_))
@@ -376,7 +414,10 @@ accel_summaries <- function(device, data_folder, output_folder,
       pieces_for_join <- pieces
       if (used_counts_bg) pieces_for_join <- c(pieces_for_join, list(COUNTS_BG = counts_bg))
 
-      pieces_for_join <- lapply(pieces_for_join, function(d) dplyr::distinct(d, time, ID, .keep_all = TRUE))
+      pieces_for_join <- lapply(pieces_for_join, function(d) {
+        d$time <- force_posix_time(d$time)
+        dplyr::distinct(d, time, ID, .keep_all = TRUE)
+      })
 
       joined <- suppressMessages(Reduce(function(x, y) dplyr::inner_join(x, y, by = c("time", "ID")), pieces_for_join))
       if (!nrow(joined)) {
@@ -449,6 +490,8 @@ accel_summaries <- function(device, data_folder, output_folder,
         joined <- dplyr::select(joined, -dplyr::any_of(drop_cols))
       }
 
+      joined$time <- force_posix_time(joined$time)
+
       f_end <- Sys.time()
       log_rows[[length(log_rows) + 1L]] <<- data.frame(
         epoch_s = epoch,
@@ -490,14 +533,12 @@ accel_summaries <- function(device, data_folder, output_folder,
       next
     }
 
+    final_df$time <- force_posix_time(final_df$time)
+
     # IMPORTANT: write time as character in requested tz, not UTC/Z
     final_df_out <- final_df |>
       dplyr::mutate(
-        time = format(
-          as.POSIXct(time, tz = tz),
-          tz = tz,
-          format = "%Y-%m-%d %H:%M:%OS3"
-        )
+        time = format_time_in_tz(time, tz_out = tz)
       )
 
     out_file <- file.path(
@@ -514,7 +555,7 @@ accel_summaries <- function(device, data_folder, output_folder,
     append_detail(paste0("  rows written           : ", nrow(final_df_out)))
     append_detail(paste0("  time written in tz     : ", tz))
     append_detail("  time output format     : %Y-%m-%d %H:%M:%OS3")
-    append_detail("  note                   : final CSV timestamps written as local clock text, not UTC ISO8601 Z")
+    append_detail("  note                   : final CSV timestamps written as local clock text after explicit with_tz() conversion")
     append_detail(paste0("  epoch time (sec)       : ", round(as.numeric(difftime(epoch_end, epoch_start, units = "secs")), 3)))
   }
 
@@ -584,7 +625,7 @@ accel_summaries <- function(device, data_folder, output_folder,
     "ABBREVIATIONS & EXPLANATIONS",
     "",
     "  first_time / last_time",
-    "    - first and last timestamps returned by the loader for that file, shown in the requested tz.",
+    "    - first and last timestamps returned by the loader, displayed in the requested tz.",
     "",
     "  time_model",
     "    - posix                  : time was already POSIX-like",
@@ -596,14 +637,13 @@ accel_summaries <- function(device, data_folder, output_folder,
     "",
     "  source_tz",
     "    - the timezone source UA inferred for interpreting raw timestamps.",
-    "    - examples: encoded_in_raw, UTC-origin instant, assumed_America/Chicago",
     "",
     "  output_tz",
     paste0("    - the timezone used for final CSV writing. In this run: ", tz),
     "",
     "  tz_rule",
-    "    - with_tz     : raw time was treated as an instant, then expressed in output_tz",
-    "    - local_parse : raw naive datetime strings were interpreted directly in output_tz",
+    "    - compute_in_source_tz         : compute timeline preserved source instant behavior",
+    "    - compute_in_assumed_source_tz : naive timestamps interpreted in assumed source timezone",
     "",
     "  grid_action (NO interpolation)",
     "    - kept     : original timeline retained",
@@ -628,7 +668,8 @@ accel_summaries <- function(device, data_folder, output_folder,
     "IMPORTANT NOTES",
     "  1) UA does NOT interpolate X/Y/Z.",
     "  2) Final CSV timestamps are written as character in the requested tz, not UTC Z strings.",
-    "  3) If source_tz was assumed rather than detected from raw data, verify it matches device/export settings.",
+    "  3) Time display/export now uses explicit with_tz() conversion.",
+    "  4) If source_tz was assumed rather than detected from raw data, verify it matches device/export settings.",
     ""
   )
   write(glossary_lines, file = log_path, append = TRUE)

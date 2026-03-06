@@ -5,15 +5,16 @@
 #' - robust to headered or headerless files
 #' - robust to metadata blocks before the real numeric table
 #' - robust to odd axis names and odd time encodings
-#' - strict about selecting a CREDIBLE absolute timeline
+#' - strict about selecting a credible absolute timeline
 #' - transparent about timezone handling via attached attributes
 #'
 #' Timezone policy:
-#' 1) If timezone/offset is explicitly encoded in raw strings, use it.
-#' 2) If time is numeric epoch-based, treat it as a UTC-origin instant by definition,
-#'    then express output in `tz`.
-#' 3) If time is naive local clock text, interpret it in `tz`.
-#' 4) If raw timezone is not detectable, log that it was assumed.
+#' 1) If timezone/offset is explicitly encoded in raw strings, use that information.
+#' 2) If time is numeric epoch-based, treat it as a UTC-origin instant.
+#' 3) If time is naive local clock text, interpret it in the chosen source tz:
+#'      - requested `tz` if provided
+#'      - otherwise "UTC"
+#' 4) Compute-time uses the source timeline, not the display/output timezone.
 #'
 #' Important:
 #' - NO interpolation of X/Y/Z is performed.
@@ -227,9 +228,9 @@ read_and_calibrate_generic <- function(file_path,
     any(has_z | has_off, na.rm = TRUE)
   }
 
-  parse_time_string_detectable_tz <- function(x_chr, output_tz) {
+  parse_time_string_detectable_tz <- function(x_chr) {
     s <- canon_ts_chr(x_chr)
-    out <- suppressWarnings(lubridate::parse_date_time(
+    suppressWarnings(lubridate::parse_date_time(
       s,
       orders = c(
         "Ymd HMSOSz", "Y-m-d H:M:S!OSz",
@@ -240,9 +241,6 @@ read_and_calibrate_generic <- function(file_path,
       tz = "UTC",
       exact = FALSE
     ))
-    out <- lubridate::with_tz(out, output_tz)
-    attr(out, "tzone") <- output_tz
-    out
   }
 
   parse_time_string_local <- function(x_chr, tz_local) {
@@ -319,8 +317,6 @@ read_and_calibrate_generic <- function(file_path,
     list(time_utc = tt_all, model = best, score = min(scores))
   }
 
-  # Detect epoch anchor + elapsed ticks pattern.
-  # This is only accepted if the anchor is a PLAUSIBLE modern absolute timeline.
   detect_epoch_plus_elapsed <- function(df, target_dt = 1 / sample_rate) {
     num_idx <- which(vapply(df, function(x) is.numeric(x) || is.integer(x), logical(1)))
     if (length(num_idx) < 2) return(NULL)
@@ -375,24 +371,39 @@ read_and_calibrate_generic <- function(file_path,
     }
 
     if (!is.finite(best$score) || is.null(best$anchor) || is.null(best$elapsed)) return(NULL)
-
     best
   }
 
-  parse_time_any <- function(df, col_idx, output_tz) {
+  # ---------------------------------------------------------------------------
+  # internal compute time policy
+  # ---------------------------------------------------------------------------
+  as_compute_tz <- function(time_vec, compute_tz) {
+    if (identical(compute_tz, "UTC")) {
+      out <- as.POSIXct(time_vec, tz = "UTC")
+      attr(out, "tzone") <- "UTC"
+      return(out)
+    }
+    out <- as.POSIXct(format(time_vec, tz = compute_tz, usetz = FALSE), tz = compute_tz)
+    attr(out, "tzone") <- compute_tz
+    out
+  }
+
+  parse_time_any <- function(df, col_idx, requested_tz) {
     x <- df[[col_idx]]
 
     if (inherits(x, "POSIXt")) {
-      t_local <- lubridate::with_tz(as.POSIXct(x), output_tz)
-      attr(t_local, "tzone") <- output_tz
+      src_tz <- attr(x, "tzone") %||% "UTC"
+      t_comp <- as.POSIXct(x, tz = src_tz)
+      attr(t_comp, "tzone") <- src_tz
       return(list(
-        time = t_local,
+        time = t_comp,
         spec = list(
           time_source_type = "posix",
           source_tz_detected = TRUE,
-          source_tz = attr(x, "tzone") %||% "embedded_posix",
-          output_tz = output_tz,
-          tz_rule = "with_tz",
+          source_tz = src_tz,
+          compute_tz = src_tz,
+          output_tz = requested_tz,
+          tz_rule = "compute_in_source_tz",
           model = "posix",
           score = 0
         )
@@ -401,16 +412,17 @@ read_and_calibrate_generic <- function(file_path,
 
     if (is.numeric(x) || is.integer(x)) {
       p <- parse_time_numeric_best_utc(x, target_dt = 1 / sample_rate)
-      t_local <- lubridate::with_tz(p$time_utc, output_tz)
-      attr(t_local, "tzone") <- output_tz
+      t_comp <- as.POSIXct(p$time_utc, tz = "UTC")
+      attr(t_comp, "tzone") <- "UTC"
       return(list(
-        time = t_local,
+        time = t_comp,
         spec = list(
           time_source_type = p$model,
-          source_tz_detected = FALSE,
-          source_tz = "UTC-origin instant",
-          output_tz = output_tz,
-          tz_rule = "with_tz",
+          source_tz_detected = TRUE,
+          source_tz = "UTC",
+          compute_tz = "UTC",
+          output_tz = requested_tz,
+          tz_rule = "compute_in_source_tz",
           model = p$model,
           score = p$score
         )
@@ -419,50 +431,59 @@ read_and_calibrate_generic <- function(file_path,
 
     x_chr <- as.character(x)
 
-    tod <- parse_time_of_day_only(x_chr, tz_local = output_tz)
-    if (!is.null(tod) && any(!is.na(tod))) {
-      return(list(
-        time = tod,
-        spec = list(
-          time_source_type = "tod_plus_detected_date",
-          source_tz_detected = FALSE,
-          source_tz = paste0("assumed_", output_tz),
-          output_tz = output_tz,
-          tz_rule = "local_parse",
-          model = "tod_plus_date",
-          score = score_regular(as.numeric(tod), 1 / sample_rate) + year_penalty(tod)
-        )
-      ))
-    }
-
     if (detect_explicit_tz(x_chr)) {
-      out <- parse_time_string_detectable_tz(x_chr, output_tz = output_tz)
+      out <- parse_time_string_detectable_tz(x_chr)
+      t_comp <- as.POSIXct(out, tz = "UTC")
+      attr(t_comp, "tzone") <- "UTC"
       return(list(
-        time = out,
+        time = t_comp,
         spec = list(
           time_source_type = "datetime_with_offset",
           source_tz_detected = TRUE,
           source_tz = "encoded_in_raw",
-          output_tz = output_tz,
-          tz_rule = "with_tz",
+          compute_tz = "UTC",
+          output_tz = requested_tz,
+          tz_rule = "compute_in_source_tz",
           model = "datetime_with_offset",
-          score = score_regular(as.numeric(out), 1 / sample_rate) + year_penalty(out)
+          score = score_regular(as.numeric(t_comp), 1 / sample_rate) + year_penalty(t_comp)
         )
       ))
     }
 
-    out <- parse_time_string_local(x_chr, tz_local = output_tz)
-    if (!all(is.na(out))) {
+    tod <- parse_time_of_day_only(x_chr, tz_local = requested_tz)
+    if (!is.null(tod) && any(!is.na(tod))) {
+      t_comp <- as.POSIXct(tod, tz = requested_tz)
+      attr(t_comp, "tzone") <- requested_tz
       return(list(
-        time = out,
+        time = t_comp,
+        spec = list(
+          time_source_type = "tod_plus_detected_date",
+          source_tz_detected = FALSE,
+          source_tz = requested_tz,
+          compute_tz = requested_tz,
+          output_tz = requested_tz,
+          tz_rule = "compute_in_assumed_source_tz",
+          model = "tod_plus_date",
+          score = score_regular(as.numeric(t_comp), 1 / sample_rate) + year_penalty(t_comp)
+        )
+      ))
+    }
+
+    out <- parse_time_string_local(x_chr, tz_local = requested_tz)
+    if (!all(is.na(out))) {
+      t_comp <- as.POSIXct(out, tz = requested_tz)
+      attr(t_comp, "tzone") <- requested_tz
+      return(list(
+        time = t_comp,
         spec = list(
           time_source_type = "naive_datetime",
           source_tz_detected = FALSE,
-          source_tz = paste0("assumed_", output_tz),
-          output_tz = output_tz,
-          tz_rule = "local_parse",
+          source_tz = requested_tz,
+          compute_tz = requested_tz,
+          output_tz = requested_tz,
+          tz_rule = "compute_in_assumed_source_tz",
           model = "datetime_string_local",
-          score = score_regular(as.numeric(out), 1 / sample_rate) + year_penalty(out)
+          score = score_regular(as.numeric(t_comp), 1 / sample_rate) + year_penalty(t_comp)
         )
       ))
     }
@@ -470,16 +491,17 @@ read_and_calibrate_generic <- function(file_path,
     num <- suppressWarnings(as.numeric(x_chr))
     if (!all(is.na(num))) {
       p <- parse_time_numeric_best_utc(num, target_dt = 1 / sample_rate)
-      t_local <- lubridate::with_tz(p$time_utc, output_tz)
-      attr(t_local, "tzone") <- output_tz
+      t_comp <- as.POSIXct(p$time_utc, tz = "UTC")
+      attr(t_comp, "tzone") <- "UTC"
       return(list(
-        time = t_local,
+        time = t_comp,
         spec = list(
           time_source_type = p$model,
-          source_tz_detected = FALSE,
-          source_tz = "UTC-origin instant",
-          output_tz = output_tz,
-          tz_rule = "with_tz",
+          source_tz_detected = TRUE,
+          source_tz = "UTC",
+          compute_tz = "UTC",
+          output_tz = requested_tz,
+          tz_rule = "compute_in_source_tz",
           model = p$model,
           score = p$score
         )
@@ -487,12 +509,13 @@ read_and_calibrate_generic <- function(file_path,
     }
 
     list(
-      time = as.POSIXct(rep(NA_real_, nrow(df)), origin = "1970-01-01", tz = output_tz),
+      time = as.POSIXct(rep(NA_real_, nrow(df)), origin = "1970-01-01", tz = "UTC"),
       spec = list(
         time_source_type = NA_character_,
         source_tz_detected = FALSE,
         source_tz = NA_character_,
-        output_tz = output_tz,
+        compute_tz = "UTC",
+        output_tz = requested_tz,
         tz_rule = NA_character_,
         model = NA_character_,
         score = Inf
@@ -521,7 +544,7 @@ read_and_calibrate_generic <- function(file_path,
     best <- list(idx = NA_integer_, score = Inf, ok_rate = 0, spec = NULL)
 
     for (j in candidates_idx) {
-      p <- parse_time_any(df, j, output_tz = tz)
+      p <- parse_time_any(df, j, requested_tz = tz)
       tt <- p$time
       ok <- !is.na(tt)
       ok_rate <- mean(ok)
@@ -767,13 +790,13 @@ read_and_calibrate_generic <- function(file_path,
   # ---------------------------------------------------------------------------
   # grid actions (NO interpolation)
   # ---------------------------------------------------------------------------
-  snap_to_grid_and_collapse <- function(df, hz, tz_out) {
+  snap_to_grid_and_collapse <- function(df, hz, compute_tz) {
     df <- df[order(df$time), , drop = FALSE]
     period <- 1 / hz
     t0 <- as.numeric(df$time[1])
     snapped <- round((as.numeric(df$time) - t0) / period) * period + t0
-    df$time <- as.POSIXct(snapped, origin = "1970-01-01", tz = tz_out)
-    attr(df$time, "tzone") <- tz_out
+    df$time <- as.POSIXct(snapped, origin = "1970-01-01", tz = compute_tz)
+    attr(df$time, "tzone") <- compute_tz
 
     out <- df |>
       dplyr::group_by(time) |>
@@ -785,18 +808,18 @@ read_and_calibrate_generic <- function(file_path,
       ) |>
       as.data.frame()
 
-    out$time <- as.POSIXct(out$time, tz = tz_out)
-    attr(out$time, "tzone") <- tz_out
+    out$time <- as.POSIXct(out$time, tz = compute_tz)
+    attr(out$time, "tzone") <- compute_tz
     out
   }
 
-  rebuild_grid_preserve_order <- function(df, hz, tz_out) {
+  rebuild_grid_preserve_order <- function(df, hz, compute_tz) {
     df <- df[order(df$time), , drop = FALSE]
     n <- nrow(df)
-    t0 <- as.POSIXct(df$time[1], tz = tz_out)
-    attr(t0, "tzone") <- tz_out
+    t0 <- as.POSIXct(df$time[1], tz = compute_tz)
+    attr(t0, "tzone") <- compute_tz
     new_time <- t0 + seq(0, by = 1 / hz, length.out = n)
-    attr(new_time, "tzone") <- tz_out
+    attr(new_time, "tzone") <- compute_tz
     df$time <- new_time
     df
   }
@@ -804,12 +827,12 @@ read_and_calibrate_generic <- function(file_path,
   # ---------------------------------------------------------------------------
   # calibration helpers
   # ---------------------------------------------------------------------------
-  .as_plain_xyz <- function(df, tz_out) {
+  .as_plain_xyz <- function(df, compute_tz) {
     df <- as.data.frame(df)
     df <- df[, intersect(names(df), c("time", "X", "Y", "Z")), drop = FALSE]
     flatten_num <- function(x) if (is.list(x)) as.numeric(unlist(x, use.names = FALSE)) else as.numeric(x)
-    df$time <- as.POSIXct(df$time, tz = tz_out)
-    attr(df$time, "tzone") <- tz_out
+    df$time <- as.POSIXct(df$time, tz = compute_tz)
+    attr(df$time, "tzone") <- compute_tz
     df$X <- flatten_num(df$X)
     df$Y <- flatten_num(df$Y)
     df$Z <- flatten_num(df$Z)
@@ -881,6 +904,7 @@ read_and_calibrate_generic <- function(file_path,
     time_source_type = NA_character_,
     source_tz_detected = NA,
     source_tz = NA_character_,
+    compute_tz = NA_character_,
     output_tz = tz,
     tz_rule = NA_character_,
     model = NA_character_,
@@ -891,25 +915,17 @@ read_and_calibrate_generic <- function(file_path,
     autocalibrate_note = "not_attempted"
   )
 
-  # Prefer explicit or detected absolute time column.
-  # Only use epoch+elapsed if:
-  # - no explicit time_col given
-  # - detected time candidate is weak / implausible
   use_epoch_elapsed <- FALSE
   epoch_elapsed <- NULL
 
-  # first try the nominated/detected time column directly
-  p_main <- parse_time_any(df0, match(tc, names(df0)), output_tz = tz)
+  p_main <- parse_time_any(df0, match(tc, names(df0)), requested_tz = tz)
   main_time <- p_main$time
   main_spec <- p_main$spec
   main_score <- main_spec$score %||% Inf
 
-  # if main timeline looks implausible (e.g. 1970) and no explicit time_col,
-  # allow epoch+elapsed rescue
   if (is.null(time_col)) {
     epoch_elapsed <- detect_epoch_plus_elapsed(df0, target_dt = 1 / sample_rate)
     if (!is.null(epoch_elapsed)) {
-      # prefer epoch+elapsed only if better than main parse
       if (!is.finite(main_score) || epoch_elapsed$score + 5 < main_score) {
         use_epoch_elapsed <- TRUE
       }
@@ -936,15 +952,16 @@ read_and_calibrate_generic <- function(file_path,
                            ns = 1e-9, us = 1e-6, ms = 1e-3, s = 1, 1e-9)
       delta_sec <- delta_ticks * unit_scale
       time_utc <- anchor_utc + delta_sec
-      time <- lubridate::with_tz(time_utc, tz)
-      attr(time, "tzone") <- tz
+      time <- as.POSIXct(time_utc, tz = "UTC")
+      attr(time, "tzone") <- "UTC"
 
       time_spec <- utils::modifyList(time_spec, list(
         time_source_type = paste0(epoch_elapsed$anchor_model, "+elapsed_", epoch_elapsed$elapsed_unit),
-        source_tz_detected = FALSE,
-        source_tz = "UTC-origin instant",
+        source_tz_detected = TRUE,
+        source_tz = "UTC",
+        compute_tz = "UTC",
         output_tz = tz,
-        tz_rule = "with_tz",
+        tz_rule = "compute_in_source_tz",
         model = "epoch_plus_elapsed",
         anchor_col = names(df0)[anchor_idx],
         elapsed_col = names(df0)[elapsed_idx],
@@ -957,11 +974,8 @@ read_and_calibrate_generic <- function(file_path,
         names(df0)[anchor_idx], epoch_elapsed$anchor_model,
         names(df0)[elapsed_idx], epoch_elapsed$elapsed_unit
       ))
-      add_report(sprintf(
-        "Timezone handling: anchor treated as UTC-origin instant; output expressed in %s.",
-        tz
-      ))
-      add_report("Caution: verify that the automatically used timezone is appropriate for your device/export settings.")
+      add_report("Compute timeline uses source timezone characteristics. For epoch-style anchor/elapsed this is UTC.")
+      add_report(sprintf("Requested output timezone for driver/export is %s.", tz))
     }
   } else {
     time <- main_time
@@ -969,32 +983,28 @@ read_and_calibrate_generic <- function(file_path,
 
     if (isTRUE(time_spec$source_tz_detected)) {
       add_report(sprintf(
-        "Detected time column '%s' with timezone/offset explicitly encoded in raw data.",
+        "Detected time column '%s' with source timezone information available.",
         tc
       ))
       add_report(sprintf(
-        "Timezone handling: source timezone detected from raw; output expressed in %s.",
-        tz
+        "Compute timeline uses source timezone = %s.",
+        time_spec$compute_tz %||% time_spec$source_tz
       ))
     } else {
       add_report(sprintf(
         "Detected time column '%s' with time model '%s'.",
         tc, time_spec$model
       ))
-      if (identical(time_spec$tz_rule, "with_tz")) {
-        add_report(sprintf(
-          "Timezone handling: raw time treated as UTC-origin instant; output expressed in %s.",
-          tz
-        ))
-      } else {
-        add_report(sprintf(
-          "Timezone handling: raw time had no detectable timezone; interpreted using %s.",
-          tz
-        ))
-      }
-      add_report("Caution: raw timezone was not explicitly detectable. Verify that the automatically used timezone is appropriate for your data.")
+      add_report(sprintf(
+        "Raw timezone was not explicitly detectable. Compute timeline uses assumed source timezone = %s.",
+        time_spec$compute_tz %||% tz
+      ))
+      add_report("Caution: verify that the automatically used timezone is appropriate for your data.")
     }
+    add_report(sprintf("Requested output timezone for driver/export is %s.", tz))
   }
+
+  compute_tz <- time_spec$compute_tz %||% "UTC"
 
   X <- suppressWarnings(as.numeric(df0[[xc]]))
   Y <- suppressWarnings(as.numeric(df0[[yc]]))
@@ -1006,9 +1016,8 @@ read_and_calibrate_generic <- function(file_path,
 
   if (!nrow(raw)) stop("No samples after read: ", basename(file_path))
 
-  # hard safeguard against bogus 1970 anchoring
   first_year <- suppressWarnings(as.integer(format(raw$time[1], "%Y")))
-  if (is.finite(first_year) && first_year == 1970) {
+  if (is.finite(first_year) && first_year == 1970 && !identical(compute_tz, "UTC")) {
     stop(
       "GENERIC loader detected a timeline anchored to 1970-01-01.\n",
       "This usually means an elapsed/time-of-day column was selected without a credible calendar date anchor.\n",
@@ -1021,9 +1030,9 @@ read_and_calibrate_generic <- function(file_path,
     tc, xc, yc, zc, nrow(raw)
   ))
   add_report(sprintf(
-    "Timeline span after parsing: first=%s ; last=%s",
-    format(raw$time[1], tz = tz, usetz = TRUE),
-    format(raw$time[nrow(raw)], tz = tz, usetz = TRUE)
+    "Timeline span after parsing (compute tz): first=%s ; last=%s",
+    format(raw$time[1], tz = compute_tz, usetz = TRUE),
+    format(raw$time[nrow(raw)], tz = compute_tz, usetz = TRUE)
   ))
 
   # ---------------------------------------------------------------------------
@@ -1031,20 +1040,20 @@ read_and_calibrate_generic <- function(file_path,
   # ---------------------------------------------------------------------------
   if (is_regular_enough(raw$time, hz = sample_rate)) {
     time_spec$grid_action <- "kept"
-    add_report(sprintf("Timeline regularity check passed for %g Hz. Original timeline retained.", sample_rate))
+    add_report(sprintf("Timeline regularity check passed for %g Hz. Original compute timeline retained.", sample_rate))
   } else {
     add_report(sprintf(
       "Timeline irregular/unsafe for declared %g Hz. Applying snap-to-grid with duplicate collapse first (no interpolation).",
       sample_rate
     ))
 
-    snapped <- snap_to_grid_and_collapse(raw, hz = sample_rate, tz_out = tz)
+    snapped <- snap_to_grid_and_collapse(raw, hz = sample_rate, compute_tz = compute_tz)
     if (is_regular_enough(snapped$time, hz = sample_rate)) {
       raw <- tibble::as_tibble(snapped)
       time_spec$grid_action <- "snapped"
       add_report("Grid action used: snapped. Timestamps were rounded to nearest grid tick and duplicate ticks were averaged.")
     } else {
-      raw <- tibble::as_tibble(rebuild_grid_preserve_order(raw, hz = sample_rate, tz_out = tz))
+      raw <- tibble::as_tibble(rebuild_grid_preserve_order(raw, hz = sample_rate, compute_tz = compute_tz))
       time_spec$grid_action <- "rebuilt"
       add_report("Grid action used: rebuilt. A strict time index of length N was rebuilt preserving sample order.")
       add_report("Important: this does not interpolate missing values; it only reindexes observed samples.")
@@ -1078,12 +1087,12 @@ read_and_calibrate_generic <- function(file_path,
   }
 
   if (do_cal) {
-    raw2 <- .as_plain_xyz(raw, tz_out = tz)
+    raw2 <- .as_plain_xyz(raw, compute_tz = compute_tz)
     cal <- NULL
     cal_err <- NULL
 
     tryCatch({
-      cal <- agcounts::agcalibrate(raw = raw2, verbose = FALSE, tz = tz)
+      cal <- agcounts::agcalibrate(raw = raw2, verbose = FALSE, tz = compute_tz)
     }, error = function(e) cal_err <<- e)
 
     if (is.null(cal)) {
@@ -1096,7 +1105,7 @@ read_and_calibrate_generic <- function(file_path,
           z$n_dropped, 100 * z$n_dropped / nrow(raw2)
         ))
         cal <- tryCatch(
-          agcounts::agcalibrate(raw = z$df, verbose = FALSE, tz = tz),
+          agcounts::agcalibrate(raw = z$df, verbose = FALSE, tz = compute_tz),
           error = function(e) { cal_err <<- e; NULL }
         )
       }
@@ -1127,7 +1136,7 @@ read_and_calibrate_generic <- function(file_path,
     }
 
     raw <- tibble::tibble(
-      time = as.POSIXct(cal$time, tz = tz),
+      time = as.POSIXct(cal$time, tz = compute_tz),
       X = as.numeric(cal$X),
       Y = as.numeric(cal$Y),
       Z = as.numeric(cal$Z)
@@ -1135,18 +1144,18 @@ read_and_calibrate_generic <- function(file_path,
       dplyr::filter(!is.na(time) & is.finite(X) & is.finite(Y) & is.finite(Z)) |>
       dplyr::arrange(time)
 
-    attr(raw$time, "tzone") <- tz
+    attr(raw$time, "tzone") <- compute_tz
 
     if (!nrow(raw)) stop("No samples after calibration fallback: ", basename(file_path))
   }
 
   # ---------------------------------------------------------------------------
-  # final strict output grid
+  # final strict output grid (compute timeline only)
   # ---------------------------------------------------------------------------
   n <- nrow(raw)
   t0 <- lubridate::floor_date(raw$time[1], "second")
-  t0 <- as.POSIXct(t0, tz = tz)
-  attr(t0, "tzone") <- tz
+  t0 <- as.POSIXct(t0, tz = compute_tz)
+  attr(t0, "tzone") <- compute_tz
 
   out <- tibble::tibble(
     time = t0 + seq(0, by = 1 / sample_rate, length.out = n),
@@ -1154,12 +1163,16 @@ read_and_calibrate_generic <- function(file_path,
     Y = raw$Y,
     Z = raw$Z
   )
-  attr(out$time, "tzone") <- tz
+  attr(out$time, "tzone") <- compute_tz
 
   add_report(sprintf(
-    "Final output timeline: first=%s ; last=%s ; tz_used=%s",
-    format(out$time[1], tz = tz, usetz = TRUE),
-    format(out$time[nrow(out)], tz = tz, usetz = TRUE),
+    "Final compute timeline: first=%s ; last=%s ; compute_tz=%s",
+    format(out$time[1], tz = compute_tz, usetz = TRUE),
+    format(out$time[nrow(out)], tz = compute_tz, usetz = TRUE),
+    compute_tz
+  ))
+  add_report(sprintf(
+    "Requested output timezone retained for driver/export: %s",
     tz
   ))
 
