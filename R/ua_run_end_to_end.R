@@ -6,7 +6,9 @@
 #   Output2: per-day zone summary (+ "Volume") with NHANES anchor + equated NHANES refs
 #   Output3: per-day percentile positioning (Volume + IG) anchored on each metric
 #   Output4: daily rows + weekly aggregate rows in ONE file
-#   Output5: run report + glossary + run status
+#   Output5: daily MX rows
+#   Output6: weekly MX rows
+#   Output7: run report + glossary + run status
 #
 # Requirements (package functions + data):
 #   - load_precomputed_metrics()
@@ -18,6 +20,7 @@ ua_run_end_to_end <- function(in_path,
                               out_dir,
                               location = "ndw",
                               make_weekly = TRUE,
+                              mx_values = c(1, 2, 5, 10, 15, 20, 30, 45, 60, 120, 240, 360, 480, 600, 720),
                               overwrite = TRUE) {
 
   stopifnot(requireNamespace("data.table", quietly = TRUE))
@@ -85,7 +88,14 @@ ua_run_end_to_end <- function(in_path,
 
   ua_stop_epoch <- function(epoch_sec) {
     epoch_sec <- as.integer(epoch_sec)
-    if (!(epoch_sec %in% c(5L, 60L))) stop("Only epoch_sec 5 or 60 supported. Got: ", epoch_sec, call. = FALSE)
+    if (!(epoch_sec %in% c(5L, 60L))) {
+      stop(
+        "Current ua_run_end_to_end() processing supports only epoch_sec 5 or 60. Got: ",
+        epoch_sec,
+        ". The loader can accept other single-epoch files, but this phase is currently restricted to 5/60.",
+        call. = FALSE
+      )
+    }
     epoch_sec
   }
 
@@ -121,6 +131,28 @@ ua_run_end_to_end <- function(in_path,
     b <- coef(fit)[["log(x[ok])"]]
     if (!is.finite(b)) return(NA_real_)
     unname(b)
+  }
+
+  ua_compute_mx_group <- function(values, epoch_sec, mx_values) {
+    vals <- suppressWarnings(as.numeric(values))
+    vals <- vals[is.finite(vals) & vals >= 0]
+    if (!length(vals)) return(NULL)
+
+    vals <- sort(vals, decreasing = TRUE)
+    n_avail <- length(vals)
+
+    out <- lapply(mx_values, function(mx) {
+      n_epochs <- ceiling((as.numeric(mx) * 60) / as.numeric(epoch_sec))
+      n_take <- min(n_epochs, n_avail)
+      if (n_take <= 0) return(NULL)
+
+      data.table::data.table(
+        MX = paste0("M", mx),
+        mx_value = min(vals[seq_len(n_take)], na.rm = TRUE)
+      )
+    })
+
+    data.table::rbindlist(out, use.names = TRUE, fill = TRUE)
   }
 
   # Zones (fixed 6-band labels from your reference table)
@@ -239,12 +271,9 @@ ua_run_end_to_end <- function(in_path,
     out
   }
 
-  # --------- MINIMAL FIX #1 (prevents Output2 becoming empty) ---------
-  # Do NOT drop rows when references are missing. Keep observed rows, add NA refs.
   attach_output2_refs <- function(zone_daily, CW) {
     ZD <- copy(zone_daily)
 
-    # default anchor refs
     ref_default <- CW[metric == anchor & (zone %in% c(band6_levels_raw, "All"))]
     ref_default[, zone_join := zone]
     ref_default[, zone_join := fifelse(zone_join == "All", "All", zone_join)]
@@ -266,7 +295,6 @@ ua_run_end_to_end <- function(in_path,
       sort = FALSE
     )
 
-    # peer metric refs (equated columns)
     peers <- CW[metric != anchor & (zone %in% c(band6_levels_raw, "All"))]
     if (nrow(peers)) {
       peers[, zone_join := zone]
@@ -293,9 +321,6 @@ ua_run_end_to_end <- function(in_path,
     ZD[]
   }
 
-  # ---------------------------
-  # Output3: anchor-centric percentile lookups (Volume + IG)
-  # ---------------------------
   build_output3_nhanes_anchor <- function(all_daily, perc_dt) {
     stopifnot(requireNamespace("data.table", quietly = TRUE))
     library(data.table)
@@ -417,8 +442,6 @@ ua_run_end_to_end <- function(in_path,
     out[]
   }
 
-  # --------- MINIMAL FIX #2 (Output4 was failing due to wrong column names) ---------
-  # Output4 must use observed_* columns from all_daily (not old total_min_day/overall_intensity/ig_slope).
   ua_make_daily_plus_weekly <- function(all_daily) {
     stopifnot(requireNamespace("data.table", quietly = TRUE))
     library(data.table)
@@ -456,6 +479,61 @@ ua_run_end_to_end <- function(in_path,
     out[]
   }
 
+  ua_make_mx_daily <- function(DT, metric_cols, demo_id, epoch_sec, location, mx_values) {
+    X <- as.data.table(copy(DT))
+    keep_metrics <- intersect(metric_cols, names(X))
+    keep_metrics <- setdiff(keep_metrics, c("axis1","axis2","axis3","epoch_sec","age"))
+    if (!length(keep_metrics)) stop("No usable metric columns available for MX.", call. = FALSE)
+
+    long <- melt(
+      X,
+      id.vars = c("id", "day"),
+      measure.vars = keep_metrics,
+      variable.name = "metric",
+      value.name = "value",
+      variable.factor = FALSE
+    )
+
+    long[, metric := canon_metric(metric)]
+    long <- long[is.finite(value) & value >= 0]
+    if (!nrow(long)) stop("No finite non-negative values available for MX after reshaping.", call. = FALSE)
+
+    out <- long[, {
+      mx_dt <- ua_compute_mx_group(value, epoch_sec = epoch_sec[1], mx_values = mx_values)
+      if (is.null(mx_dt)) NULL else mx_dt
+    }, by = .(id, day, metric)]
+
+    out[, epoch_sec := as.integer(epoch_sec)]
+    out[, location := location]
+    out <- merge(out, demo_id[, .(id, sex, age, category)], by = "id", all.x = TRUE, sort = FALSE)
+
+    setcolorder(out, c("id","day","metric","epoch_sec","location","sex","age","category",
+                       "MX","mx_value"))
+    setorder(out, id, day, metric, MX)
+    out[]
+  }
+
+  ua_make_mx_weekly <- function(mx_daily) {
+    M <- as.data.table(copy(mx_daily))
+    req <- c("id","day","metric","epoch_sec","location","sex","age","category",
+             "MX","mx_value")
+    miss <- setdiff(req, names(M))
+    if (length(miss)) stop("Output6: mx_daily missing columns: ", paste(miss, collapse = ", "), call. = FALSE)
+
+    M[, week := as.integer((as.integer(day) - 1L) %/% 7L) + 1L]
+
+    out <- M[, .(
+      n_days_in_period = data.table::uniqueN(day),
+      mx_value = mean(as.numeric(mx_value), na.rm = TRUE)
+    ), by = .(id, week, metric, epoch_sec, location, sex, age, category, MX)]
+
+    setnames(out, "week", "period_id")
+    setcolorder(out, c("id","period_id","metric","epoch_sec","location","sex","age","category",
+                       "MX","n_days_in_period","mx_value"))
+    setorder(out, id, period_id, metric, MX)
+    out[]
+  }
+
   # ============================================================
   # Run ONE FILE (internal)
   # ============================================================
@@ -469,7 +547,9 @@ ua_run_end_to_end <- function(in_path,
       output2 = list(ok = FALSE, path = NA_character_, msg = ""),
       output3 = list(ok = FALSE, path = NA_character_, msg = ""),
       output4 = list(ok = FALSE, path = NA_character_, msg = ""),
-      output5 = list(ok = FALSE, path = NA_character_, msg = "")
+      output5 = list(ok = FALSE, path = NA_character_, msg = ""),
+      output6 = list(ok = FALSE, path = NA_character_, msg = ""),
+      output7 = list(ok = FALSE, path = NA_character_, msg = "")
     )
 
     DT <- as.data.table(load_precomputed_metrics(
@@ -485,7 +565,6 @@ ua_run_end_to_end <- function(in_path,
     if (!("id" %in% names(DT))) stop("No 'id' column after load_precomputed_metrics().", call. = FALSE)
     if (!("time" %in% names(DT))) stop("No 'time' column after load_precomputed_metrics().", call. = FALSE)
 
-    # STRICT: require AGE
     if (!("age" %in% names(DT))) {
       stop("Age is required. Add an 'age' column (integer 3–80).", call. = FALSE)
     }
@@ -499,12 +578,10 @@ ua_run_end_to_end <- function(in_path,
       ), call. = FALSE)
     }
 
-    # sex optional; default pooled
     if (!("sex" %in% names(DT))) DT[, sex := "All"]
     DT[, sex := canon_sex(sex)]
     DT[is.na(sex), sex := "All"]
     DT[, sex := as.character(sex)]
-
 
     epoch_sec <- ua_stop_epoch(ua_pick_epoch(DT))
 
@@ -513,22 +590,22 @@ ua_run_end_to_end <- function(in_path,
     run_folder <- file.path(run_root, sprintf("%s_epoch%ss_%s", input_slug, epoch_sec, ts))
     dir.create(run_folder, recursive = TRUE, showWarnings = FALSE)
 
-    # Always attempt Output5 at end (even if Output3 fails)
     on.exit({
       `%||%` <- function(x, y) if (is.null(x)) y else x
 
       metrics_line <- paste(loader_meta$detected_metrics_num %||% character(0), collapse = ", ")
       if (!nzchar(metrics_line)) metrics_line <- "(none detected)"
 
-      out5_path <- file.path(run_folder, sprintf("UA_Output5_LOGISTICS_epoch%ss_%s.txt", epoch_sec, run_date))
+      out7_path <- file.path(run_folder, sprintf("UA_Output7_LOGISTICS_epoch%ss_%s.txt", epoch_sec, run_date))
 
-      out5_lines <- c(
+      out7_lines <- c(
         "universalaccel — end-to-end run report",
         paste0("Run date: ", run_date),
         paste0("Input file: ", file_path),
         paste0("Output folder (this run): ", run_folder),
         paste0("Epoch length: ", epoch_sec, " seconds"),
         paste0("Location: ", location),
+        paste0("MX values requested (minutes): ", paste(mx_values, collapse = ", ")),
         "",
         "============================================================",
         "WHAT YOU PROVIDED",
@@ -549,10 +626,12 @@ ua_run_end_to_end <- function(in_path,
         "  4) Created two NHANES-based comparison views:",
         "       • Output2: zone-based (anchor zones + equated NHANES references for other metrics)",
         "       • Output3: percentile-based (anchor percentile + NHANES values at that percentile)",
+        "  5) Computed MX metrics (daily and weekly outputs).",
         "",
         "Important limitations:",
-        "  • The file must contain a single epoch length (5s or 60s). Mixed epochs are not supported.",
-        "  • Age is required for Output3 (age-specific NHANES lookup).",
+        "  • The file must contain a single epoch length.",
+        "  • Current end-to-end phase supports only 5s or 60s.",
+        "  • Age is required for Output3 and all demographic-aware outputs.",
         "",
         "============================================================",
         "HOW TO INTERPRET THE OUTPUTS",
@@ -565,40 +644,30 @@ ua_run_end_to_end <- function(in_path,
         "  • time_bin_min          : observed minutes accumulated in that bin (YOUR data).",
         "  • cm_time_min           : descending cumulative minutes within (id, day, metric).",
         "  • intensity_zone        : zone label assigned using NHANES normative zone bounds.",
-        "  • log_midpoint / log_time_bin_min (if present): natural-log transforms used for IG-type summaries.",
         "",
         "OUTPUT 2 (DAILY SUMMARY: time in zones + NHANES references):",
         "  • Each row is one person × day × metric × zone (plus a 'Volume' row).",
         "  • observed_* columns are computed from YOUR data.",
-        "  • nhanes_anchor_* columns are NHANES reference values for the anchor metric/zone panel (same anchor, epoch, category_key).",
-        "  • equated_<metric>_* columns are NHANES reference mean/SE for other metrics, mapped onto the same anchor-defined zone.",
+        "  • nhanes_anchor_* columns are NHANES reference values for the anchor metric/zone panel.",
+        "  • equated_<metric>_* columns are NHANES reference mean/SE for other metrics mapped onto the same anchor-defined zone.",
         "",
         "OUTPUT 3 (PERCENTILES: anchor-conditioned, not zone-based):",
         "  • Each row is one person × day × anchor × stat (Volume or Intensity gradient).",
-        "  • Step A: find the nearest NHANES percentile for your observed anchor value (same anchor panel).",
-        "  • Step B: at that same percentile, look up NHANES values for ALL metrics under the same anchor panel.",
-        "  • nhanes_* columns in Output3 are NHANES reference values (not your observed values for those other metrics).",
+        "  • Finds the nearest NHANES percentile for your observed anchor value.",
+        "  • Then looks up NHANES values for all metrics at that same anchor percentile.",
         "",
         "OUTPUT 4 (DAILY + WEEKLY):",
         "  • One file containing both day-level rows and week-level rows.",
-        "  • period_type indicates whether the row is a day summary or a weekly rollup.",
-        "  • Weekly values are averages across the observed days in that week (within id × metric).",
+        "  • period_type indicates day vs week.",
         "",
-        "============================================================",
-        "OUTPUT FILES (WHAT EACH FILE IS FOR)",
-        "============================================================",
+        "OUTPUT 5 (DAILY MX):",
+        "  • Each row is one person × day × metric × MX target.",
+        "  • Mx means the threshold intensity above which the most active X minutes were accumulated.",
+        "  • mx_value is reported in the metric's native units.",
         "",
-        "OUTPUT 1 — UA_Output1_BINS_*.csv",
-        "  Detailed daily intensity distributions (minutes across bins + assigned zones).",
-        "",
-        "OUTPUT 2 — UA_Output2_DAILY_SUMMARY_*.csv",
-        "  Daily zone summaries (including 'Volume') with NHANES anchor references and equated NHANES references.",
-        "",
-        "OUTPUT 3 — UA_Output3_PERCENTILES_*.csv",
-        "  Daily percentile positioning for Volume and Intensity gradient (anchor percentile + NHANES values at that percentile).",
-        "",
-        "OUTPUT 4 — UA_Output4_DAILY_PLUS_WEEKLY_*.csv ",
-        "  Day-level rows plus week-level rollups in a single file (period_type=day/week).",
+        "OUTPUT 6 (WEEKLY MX):",
+        "  • Each row is one person × week × metric × MX target.",
+        "  • Current phase 2 weekly MX is the average of daily MX values across observed days in that week.",
         "",
         "============================================================",
         "HOW TO READ KEY TERMS / SUFFIXES",
@@ -607,16 +676,18 @@ ua_run_end_to_end <- function(in_path,
         "anchor                    : anchor metric defining the NHANES lookup panel",
         "observed_*                : computed from YOUR file (your data)",
         "nhanes_*                  : NHANES reference values (population context)",
-        "nhanesw                   : NHANES survey-weighted estimate (reference build used weights/PSU/strata)",
+        "nhanesw                   : NHANES survey-weighted estimate",
         "mean_nhanesw              : survey-weighted mean (NHANES reference)",
         "se_nhanesw                : standard error of the survey-weighted mean (NHANES reference)",
         "equated_<metric>_*        : NHANES reference values for another metric mapped to the anchor-defined zone (Output2)",
         "category / category_key   : NHANES-style age category (and sex-specific variant if applicable)",
         "intensity_zone            : zone label (Volume, Minimal, ... Peak)",
         "observed_minutes_in_zone  : minutes in zone from YOUR data (Output2)",
-        "observed_total_volume_min : total observed minutes in the day (Output4; and used to create the 'Volume' row)",
-        "observed_mean_intensity   : time-weighted mean intensity in native units (sometimes called 'volume' in plain language outputs)",
+        "observed_total_volume_min : total observed minutes in the day",
+        "observed_mean_intensity   : time-weighted mean intensity in native units",
         "observed_ig               : intensity gradient slope computed from your daily distribution",
+        "MX / Mx                   : threshold exceeded for the most active X minutes",
+        "mx_value                  : MX value in the metric's native units",
         "",
         "============================================================",
         "RUN STATUS (DEBUG)",
@@ -625,15 +696,17 @@ ua_run_end_to_end <- function(in_path,
         sprintf("Output2 ok=%s  %s  %s", status$output2$ok, status$output2$path, status$output2$msg),
         sprintf("Output3 ok=%s  %s  %s", status$output3$ok, status$output3$path, status$output3$msg),
         sprintf("Output4 ok=%s  %s  %s", status$output4$ok, status$output4$path, status$output4$msg),
+        sprintf("Output5 ok=%s  %s  %s", status$output5$ok, status$output5$path, status$output5$msg),
+        sprintf("Output6 ok=%s  %s  %s", status$output6$ok, status$output6$path, status$output6$msg),
         "",
         "============================================================",
         "END",
         "============================================================"
       )
 
-      try(ua_write_text(out5_lines, out5_path), silent = TRUE)
-      status$output5$ok <- TRUE
-      status$output5$path <- out5_path
+      try(ua_write_text(out7_lines, out7_path), silent = TRUE)
+      status$output7$ok <- TRUE
+      status$output7$path <- out7_path
     }, add = TRUE)
 
     # demographics per id
@@ -679,7 +752,7 @@ ua_run_end_to_end <- function(in_path,
     if (!status$output1$ok) stop(status$output1$msg, call. = FALSE)
 
     # -----------------------------
-    # Daily stats (for Outputs 2–4)
+    # Daily stats (for Outputs 2–6)
     # -----------------------------
     all_daily <- bins[, .(
       observed_total_volume_min = sum(time_bin_min, na.rm = TRUE),
@@ -723,8 +796,6 @@ ua_run_end_to_end <- function(in_path,
     )]
 
     zone_daily2 <- rbindlist(list(zone_daily, vol), use.names = TRUE, fill = TRUE)
-
-    # (FIXED) keep observed rows even if NHANES refs don't match
     zone_daily2 <- attach_output2_refs(zone_daily2, CW)
 
     zone_daily2[, intensity_zone := strip_intensity_zone_phrase(intensity_zone_raw)]
@@ -763,14 +834,55 @@ ua_run_end_to_end <- function(in_path,
     }, error = function(e) list(ok = FALSE, path = NA_character_, msg = conditionMessage(e)))
 
     # -----------------------------
-    # Output4: DAILY + WEEKLY (default TRUE)
+    # Output4: DAILY + WEEKLY
     # -----------------------------
     status$output4 <- list(ok = TRUE, path = NA_character_, msg = "skipped (make_weekly=FALSE)")
     if (isTRUE(make_weekly)) {
       status$output4 <- tryCatch({
         out4_dt <- ua_make_daily_plus_weekly(all_daily)
-        p <- ua_write_csv(out4_dt, file.path(run_folder, sprintf("UA_Output4_Week_Summary_epoch%ss_%s.csv", epoch_sec, run_date)))
+        p <- ua_write_csv(out4_dt, file.path(run_folder, sprintf("UA_Output4_DAILY_PLUS_WEEKLY_epoch%ss_%s.csv", epoch_sec, run_date)))
         list(ok = TRUE, path = p, msg = "wrote daily+weekly rollups")
+      }, error = function(e) list(ok = FALSE, path = NA_character_, msg = conditionMessage(e)))
+    }
+
+    # -----------------------------
+    # Output5: DAILY MX
+    # -----------------------------
+    mx_metric_cols <- loader_meta$detected_metrics_num
+    if (is.null(mx_metric_cols) || !length(mx_metric_cols)) {
+      mx_metric_cols <- intersect(c("ac","enmo","mad","mims_unit","ai","rocam"), names(DT))
+    }
+
+    status$output5 <- tryCatch({
+      out5 <- ua_make_mx_daily(
+        DT = DT,
+        metric_cols = mx_metric_cols,
+        demo_id = demo_id,
+        epoch_sec = epoch_sec,
+        location = location,
+        mx_values = mx_values
+      )
+      p <- ua_write_csv(out5, file.path(run_folder, sprintf("UA_Output5_DAILY_MX_epoch%ss_%s.csv", epoch_sec, run_date)))
+      list(ok = TRUE, path = p, msg = "")
+    }, error = function(e) list(ok = FALSE, path = NA_character_, msg = conditionMessage(e)))
+
+    # -----------------------------
+    # Output6: WEEKLY MX
+    # -----------------------------
+    status$output6 <- list(ok = TRUE, path = NA_character_, msg = "skipped (make_weekly=FALSE)")
+    if (isTRUE(make_weekly)) {
+      status$output6 <- tryCatch({
+        mx_daily <- ua_make_mx_daily(
+          DT = DT,
+          metric_cols = mx_metric_cols,
+          demo_id = demo_id,
+          epoch_sec = epoch_sec,
+          location = location,
+          mx_values = mx_values
+        )
+        out6 <- ua_make_mx_weekly(mx_daily)
+        p <- ua_write_csv(out6, file.path(run_folder, sprintf("UA_Output6_WEEKLY_MX_epoch%ss_%s.csv", epoch_sec, run_date)))
+        list(ok = TRUE, path = p, msg = "wrote weekly MX")
       }, error = function(e) list(ok = FALSE, path = NA_character_, msg = conditionMessage(e)))
     }
 

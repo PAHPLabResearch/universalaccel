@@ -6,21 +6,24 @@
 #   Robust loader for precomputed epoch-level accelerometry metrics.
 #
 # Canonical output columns:
-#   id, time (POSIXct), epoch_sec (5 or 60), sex (M/F/All), age (int),
+#   id, time (POSIXct), epoch_sec (single value), sex (M/F/All), age (int),
 #   plus numeric metric cols (any of: ac,enmo,mad,mims_unit,ai,rocam,...)
 #   plus: day (dense index per-id based on day_tz day boundaries)
 #
 # HARD RULES:
-#   - epoch_sec must be exactly 5 or 60 (single value; not mixed)
+#   - epoch_sec must be a SINGLE value (not mixed)
 #   - age is REQUIRED (must have >=1 usable age value after cleaning)
 #   - sex is OPTIONAL (defaults to All if missing/unusable)
 #   - if apply_valid_filters=TRUE then valid day is NON-NEGOTIABLE:
 #       keep ONLY id×day_date with >= valid_day_hours hours of UNIQUE epoch timestamps
 #       (NO WEEK FILTER)
 #
+# NOTE:
+#   - The loader accepts any single epoch_sec.
+#   - Current ua_run_end_to_end() processing still supports only 5s or 60s.
 # ============================================================
 
-#' Load precomputed metric time-series for binning / IG (robust messy inputs)
+#' Load precomputed metric time-series for binning / IG / MX (robust messy inputs)
 #'
 #' @param path File path (.csv/.txt/.xlsx/.xls/.rds)
 #' @param apply_valid_filters logical; apply strict valid-day filtering
@@ -75,8 +78,6 @@ load_precomputed_metrics <- function(path,
   # ============================================================
   # helpers
   # ============================================================
-  .ua_msg <- function(...) message(sprintf(...))
-
   .ua_warn_sex <- function() {
     warning(
       paste0(
@@ -114,7 +115,7 @@ load_precomputed_metrics <- function(path,
   }
 
   .parse_time_strict <- function(x) {
-    # Returns POSIXct in UTC. Does not assume input tz correctness; it standardizes to UTC output.
+    # Returns POSIXct in UTC.
     if (inherits(x, "POSIXt")) return(as.POSIXct(x, tz = "UTC"))
 
     # numeric unix time (sec or ms)
@@ -134,7 +135,6 @@ load_precomputed_metrics <- function(path,
     s[s == ""] <- NA_character_
     out <- rep(as.POSIXct(NA), length(s))
 
-    # ISO 8601 forms (Z or no Z)
     iso_idx <- !is.na(s) & grepl("T", s, fixed = TRUE)
     if (any(iso_idx)) {
       tmp <- suppressWarnings(as.POSIXct(
@@ -158,7 +158,6 @@ load_precomputed_metrics <- function(path,
     date_part <- vapply(parts, function(z) z[1], character(1))
     time_part <- vapply(parts, function(z) if (length(z) >= 2) z[2] else "", character(1))
 
-    # Date parse: mm/dd/yyyy then yyyy-mm-dd
     d <- suppressWarnings(as.POSIXct(strptime(date_part, format = "%m/%d/%Y", tz = "UTC")))
     miss_d <- is.na(d)
     if (any(miss_d)) {
@@ -216,7 +215,6 @@ load_precomputed_metrics <- function(path,
 
   .clean_age <- function(x) {
     a <- suppressWarnings(as.integer(round(as.numeric(x))))
-    # Recommended 3–80; treat anything outside as missing
     a[!(is.na(a) | (a >= 3L & a <= 80L))] <- NA_integer_
     a
   }
@@ -237,8 +235,6 @@ load_precomputed_metrics <- function(path,
 
     tnum <- as.numeric(DT$time)
     DT[, time_epoch := as.POSIXct(floor(tnum / ep) * ep, origin = "1970-01-01", tz = "UTC")]
-
-    # day boundary uses day_tz ("": local tz, "UTC": fixed, etc.)
     DT[, day_date := as.Date(time_epoch, tz = day_tz)]
 
     day_sum <- DT[, .(
@@ -252,7 +248,6 @@ load_precomputed_metrics <- function(path,
     keep <- day_sum[valid_day == TRUE, .(id, day_date)]
     DT2 <- DT[keep, on = .(id, day_date), nomatch = 0L]
 
-    # dense per-id day index
     DT2[, day := data.table::frank(day_date, ties.method = "dense"), by = id]
     DT2[, c("time_epoch","day_date") := NULL]
 
@@ -283,31 +278,25 @@ load_precomputed_metrics <- function(path,
   # map synonyms -> canonical (coalesce)
   # ============================================================
   map <- c(
-    # id/time
     "time"="time", "datetime"="time", "timestamp"="time", "date_time"="time", "date"="time",
     "id"="id", "participant"="id", "subject"="id", "record_id"="id", "seqn"="id",
 
-    # demographics
     "sex"="sex", "gender"="sex", "sex_name"="sex", "riagendr"="sex",
     "age"="age", "age_years"="age", "ridageyr"="age",
 
-    # metrics (common)
     "mims"="mims_unit", "mims_unit"="mims_unit",
     "ai"="ai",
     "enmo"="enmo",
     "mad"="mad",
     "rocam"="rocam",
 
-    # AC/counts
     "vector_magnitude"="ac", "vector_magnitude_counts"="ac",
     "vector_magnitude_count"="ac",
     "vm"="ac", "ac"="ac", "counts"="ac", "count"="ac",
 
-    # axes (allowed)
     "axis1"="axis1","axis2"="axis2","axis3"="axis3",
     "xis1"="axis1","xis2"="axis2","xis3"="axis3",
 
-    # epoch
     "epoch_sec"="epoch_sec", "epoch"="epoch_sec", "epoch_seconds"="epoch_sec"
   )
 
@@ -331,8 +320,7 @@ load_precomputed_metrics <- function(path,
     if (is_num_dest(dest)) {
       cols <- c(dest, srcs)
       DT[, (dest) := do.call(data.table::fcoalesce,
-                             lapply(cols, function(z) suppressWarnings(as.numeric(get(z))))) ]
-
+                             lapply(cols, function(z) suppressWarnings(as.numeric(get(z)))))]
     } else {
       for (src in srcs) {
         DT[is.na(get(dest)) & !is.na(get(src)), (dest) := as.character(get(src))]
@@ -346,7 +334,6 @@ load_precomputed_metrics <- function(path,
     coalesce_to(dest, srcs)
   }
 
-  # drop synonym columns that are not canonical dests
   syn_cols_present <- intersect(names(map), names(DT))
   drop_cols <- setdiff(syn_cols_present, dests)
   if (length(drop_cols)) DT[, (drop_cols) := NULL]
@@ -374,28 +361,25 @@ load_precomputed_metrics <- function(path,
     DT[, sex := .canon_sex(sex)]
     DT[, sex := as.character(sex)]
     DT[is.na(sex) | !nzchar(sex), sex := "All"]
-
   }
+
   if ("age" %in% names(DT)) {
     DT[, age := .clean_age(age)]
   }
 
-  # sex default if missing/unusable
   if (!("sex" %in% names(DT)) || all(is.na(DT$sex))) {
     .ua_warn_sex()
     DT[, sex := "All"]
   } else {
-    # fill any remaining NA sex as All (safe)
     DT[is.na(sex) | !nzchar(sex), sex := "All"]
   }
 
-  # age REQUIRED
   if (!("age" %in% names(DT)) || all(is.na(DT$age))) {
     .ua_stop_age_required()
   }
 
   # ============================================================
-  # epoch detection (5 or 60 only; no mixing)
+  # epoch detection (single value required; downstream may restrict)
   # ============================================================
   ep_user <- NULL
   if ("epoch_sec" %in% names(DT)) {
@@ -418,7 +402,6 @@ load_precomputed_metrics <- function(path,
   ep_final <- unique(na.omit(as.integer(DT$epoch_sec)))
   if (!length(ep_final) || is.na(ep_final[1])) stop("Could not determine epoch_sec.", call. = FALSE)
   if (length(ep_final) > 1) stop("Mixed epoch_sec detected: ", paste(ep_final, collapse = ", "), call. = FALSE)
-  if (!(ep_final[1] %in% c(5L, 60L))) stop("Unsupported epoch_sec=", ep_final[1], " (only 5 or 60).", call. = FALSE)
 
   data.table::setorder(DT, id, time)
 
@@ -439,7 +422,6 @@ load_precomputed_metrics <- function(path,
 
     if (!nrow(DT)) stop("After valid-day filtering, 0 rows remain.", call. = FALSE)
 
-    # HARD ASSERT: no sub-valid_day days remain (same day_tz)
     ep <- as.integer(ep_final[1])
     tnum <- as.numeric(DT$time)
     DT[, time_epoch := as.POSIXct(floor(tnum / ep) * ep, origin = "1970-01-01", tz = "UTC")]
@@ -458,7 +440,6 @@ load_precomputed_metrics <- function(path,
     DT[, c("time_epoch","day_date") := NULL]
 
   } else {
-    # still compute canonical day index
     ep <- as.integer(ep_final[1])
     tnum <- as.numeric(DT$time)
     DT[, time_epoch := as.POSIXct(floor(tnum / ep) * ep, origin = "1970-01-01", tz = "UTC")]
@@ -468,12 +449,10 @@ load_precomputed_metrics <- function(path,
   }
 
   # ============================================================
-  # Require >=1 numeric metric column (beyond axes/demographics)
+  # require >=1 numeric metric column
   # ============================================================
   non_metric <- c("id","time","epoch_sec","sex","age","day","axis1","axis2","axis3")
   candidate <- setdiff(names(DT), non_metric)
-
-  # only keep numeric columns among candidates as metrics
   numeric_metrics <- candidate[vapply(DT[, ..candidate], is.numeric, logical(1))]
 
   if (!length(numeric_metrics)) {
@@ -487,7 +466,7 @@ load_precomputed_metrics <- function(path,
   }
 
   # ============================================================
-  # metadata for downstream report
+  # metadata
   # ============================================================
   loader_meta <- list(
     source_path = path,
@@ -500,6 +479,7 @@ load_precomputed_metrics <- function(path,
 
     epoch_sec    = as.integer(ep_final[1]),
     epoch_source = epoch_source,
+    downstream_epoch_supported_now = as.integer(ep_final[1]) %in% c(5L, 60L),
 
     day_tz       = as.character(day_tz),
 

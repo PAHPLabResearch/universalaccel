@@ -2,7 +2,7 @@
 % Please edit documentation in R/loader_precomputed.R
 \name{load_precomputed_metrics}
 \alias{load_precomputed_metrics}
-\title{Load precomputed metric time-series for binning / IG (robust messy inputs)}
+\title{Load precomputed metric time-series for binning / IG / MX (robust messy inputs)}
 \usage{
 load_precomputed_metrics(
   path,
@@ -32,5 +32,5 @@ load_precomputed_metrics(
 data.table with canonical columns and attached attribute "ua_loader_meta"
 }
 \description{
-Load precomputed metric time-series for binning / IG (robust messy inputs)
+Load precomputed metric time-series for binning / IG / MX (robust messy inputs)
 }

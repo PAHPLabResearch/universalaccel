@@ -48,7 +48,6 @@ c("MIMS","AI","COUNTS","ENMO","MAD","ROCAM"). Defaults to all.}
 \item{generic_verbose}{For device="generic": extra messages}
 }
 \description{
-Driver = orchestrator:
 \itemize{
 \item loads each file via appropriate loader
 \item calls metric calculators (MIMS/AI/COUNTS/ENMO/MAD/ROCAM)

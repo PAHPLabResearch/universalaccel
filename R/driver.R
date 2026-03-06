@@ -239,10 +239,14 @@ accel_summaries <- function(device, data_folder, output_folder,
       f_start <- Sys.time()
       file_name <- basename(fp)
 
+      message("[FILE] ", file_name)
+
       df_cal <- tryCatch(
         loader(fp, sample_rate = sample_rate, tz = tz),
         error = function(e) {
           f_end <- Sys.time()
+          message("  [ERR] Loader failed: ", file_name)
+          message("        reason: ", conditionMessage(e))
           log_rows[[length(log_rows) + 1L]] <<- data.frame(
             epoch_s = epoch,
             file = file_name,
@@ -267,6 +271,8 @@ accel_summaries <- function(device, data_folder, output_folder,
         }
       )
       if (is.null(df_cal)) return(NULL)
+
+      message("  [LOAD] ok: n=", nrow(df_cal))
 
       spec <- attr(df_cal, "ua_time_spec")
       rep_lines <- attr(df_cal, "ua_time_report")
@@ -324,9 +330,26 @@ accel_summaries <- function(device, data_folder, output_folder,
         }
       }
 
+      message("  [QC] metric availability:")
+      for (nm in names(pieces)) {
+        di <- pieces[[nm]]
+        if (is.null(di) || !nrow(di)) {
+          message(sprintf("    - %-7s: NULL/empty", nm))
+        } else {
+          message(sprintf("    - %-7s: %d rows", nm, nrow(di)))
+        }
+      }
+      if (!is.null(counts_bg)) {
+        message(sprintf("    - %-10s: %s",
+                        "COUNTS(bg)",
+                        if (nrow(counts_bg)) paste0(nrow(counts_bg), " rows") else "NULL/empty"))
+      }
+
       empties <- names(pieces)[vapply(pieces, function(x) is.null(x) || !nrow(x), logical(1))]
       if (length(empties)) {
         f_end <- Sys.time()
+        message("  [SKIP] ", file_name, " skipped because metric(s) failed/empty: ",
+                paste(empties, collapse = ", "))
         log_rows[[length(log_rows) + 1L]] <<- data.frame(
           epoch_s = epoch,
           file = file_name,
@@ -358,6 +381,7 @@ accel_summaries <- function(device, data_folder, output_folder,
       joined <- suppressMessages(Reduce(function(x, y) dplyr::inner_join(x, y, by = c("time", "ID")), pieces_for_join))
       if (!nrow(joined)) {
         f_end <- Sys.time()
+        message("  [SKIP] join produced 0 rows")
         log_rows[[length(log_rows) + 1L]] <<- data.frame(
           epoch_s = epoch,
           file = file_name,
@@ -384,9 +408,11 @@ accel_summaries <- function(device, data_folder, output_folder,
       nonwear_status <- "off"
       if (isTRUE(apply_nonwear) && ("Vector.Magnitude" %in% names(joined))) {
         nonwear_status <- "applied"
+        message("  [NONWEAR] Choi: epoch=", epoch, "s")
         joined <- mark_nonwear_epoch(joined, epoch_sec = epoch)
         if (!nrow(joined)) {
           f_end <- Sys.time()
+          message("  [SKIP] all rows removed as nonwear")
           log_rows[[length(log_rows) + 1L]] <<- data.frame(
             epoch_s = epoch,
             file = file_name,
@@ -411,6 +437,7 @@ accel_summaries <- function(device, data_folder, output_folder,
         }
       } else if (isTRUE(apply_nonwear) && !("Vector.Magnitude" %in% names(joined))) {
         nonwear_status <- "skipped_no_vm"
+        message("  [NONWEAR] apply_nonwear=TRUE but Vector.Magnitude unavailable; skipping nonwear marking")
       } else if (isTRUE(apply_nonwear)) {
         nonwear_status <- "requested"
       }
@@ -443,6 +470,8 @@ accel_summaries <- function(device, data_folder, output_folder,
         note = "",
         stringsAsFactors = FALSE
       )
+
+      message("  [DONE] ", file_name, " -> ", nrow(joined), " rows")
 
       joined |>
         dplyr::distinct(time, ID, .keep_all = TRUE) |>
@@ -509,23 +538,23 @@ accel_summaries <- function(device, data_folder, output_folder,
     table_lines <- make_table(
       log_df,
       widths = c(
-        7,   # epoch_s
-        28,  # file
-        12,  # status
-        8,   # seconds
-        10,  # n_samples
-        23,  # first_time
-        23,  # last_time
-        16,  # time_model
-        18,  # source_tz
-        18,  # output_tz
-        12,  # tz_rule
-        10,  # grid_action
-        7,   # units
-        8,   # autocal
-        10,  # counts_bg
-        12,  # nonwear
-        28   # note
+        7,
+        28,
+        12,
+        8,
+        10,
+        23,
+        23,
+        16,
+        18,
+        18,
+        12,
+        10,
+        7,
+        8,
+        10,
+        12,
+        28
       )
     )
     write(table_lines, file = log_path, append = TRUE)
