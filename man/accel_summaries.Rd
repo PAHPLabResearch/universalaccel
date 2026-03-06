@@ -39,7 +39,7 @@ UA will attempt to compute COUNTS internally (only if Hz supports it) to obtain 
 \item{metrics}{Character vector of metrics to compute. Any of:
 c("MIMS","AI","COUNTS","ENMO","MAD","ROCAM"). Defaults to all.}
 
-\item{tz}{Timezone for timestamps (passed to loaders)}
+\item{tz}{Timezone for timestamps (passed to loaders and used for final CSV writing)}
 
 \item{generic_autocalibrate}{For device="generic": "auto","true","false"}
 
@@ -48,5 +48,20 @@ c("MIMS","AI","COUNTS","ENMO","MAD","ROCAM"). Defaults to all.}
 \item{generic_verbose}{For device="generic": extra messages}
 }
 \description{
-Summarize accelerometer sensor data derived from different devices
+Driver = orchestrator:
+\itemize{
+\item loads each file via appropriate loader
+\item calls metric calculators (MIMS/AI/COUNTS/ENMO/MAD/ROCAM)
+\item optionally computes COUNTS in background to obtain Vector.Magnitude for Choi nonwear
+\item joins metrics by (time, ID)
+\item writes output CSV per epoch
+\item writes one professional .txt log for the run
+}
+}
+\details{
+Time writing policy:
+\itemize{
+\item final CSV timestamps are WRITTEN AS CHARACTER in the user-requested \code{tz}
+\item this avoids silent UTC/Z serialization on export
+}
 }

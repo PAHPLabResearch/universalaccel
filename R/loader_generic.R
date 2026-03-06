@@ -1,30 +1,30 @@
-# R/generic_loader.R
-#' Read regularly-sampled accelerometer data from common tabular formats
-#' (csv/csv.gz, rds, rda/RData, xlsx/xls, parquet/feather if available),
-#' robustly detect time + X/Y/Z columns, optionally auto-calibrate via
-#' agcounts::agcalibrate(), and return tibble(time,X,Y,Z) on a strict grid.
+# R/loader_generic.R
+#' Generic loader for regularly sampled accelerometer tables
 #'
-#' Robustness goals:
-#' - Accept headered OR headerless delimited files.
-#' - Detect time stored as:
-#'   * POSIX-like strings (including year=1111 and other weird years)
-#'   * Unix seconds / milliseconds / microseconds / nanoseconds
-#'   * Excel serial dates
-#'   * Time-of-day strings without date (reconstruct)
-#' - Repair common broken time strings:
-#'   * "YYYY-mm-dd HH:MM.SSS"   (missing seconds)
-#'   * "YYYY-mm-dd HH:MM:SS"    (missing milliseconds)
-#'   * "YYYY-mm-dd"             (date only)
-#'   * "HH:MM:SS.SSS"           (time only)
-#'   * "HH:MM.SSS"              (missing seconds)
-#' - Detect X/Y/Z among many numeric columns using name hints + content-based scoring.
-#' - Ignore extra columns silently once time/X/Y/Z are identified.
+#' Design goals:
+#' - robust to headered or headerless files
+#' - robust to metadata blocks before the real numeric table
+#' - robust to odd axis names and odd time encodings
+#' - strict about selecting a CREDIBLE absolute timeline
+#' - transparent about timezone handling via attached attributes
 #'
-#' Notes:
-#' - Assumes data are regularly sampled; final output is re-gridded to sample_rate.
-#' - Autocalibration is "best-effort": if it fails (for ANY reason), it falls back
-#'   to uncalibrated signals (optionally verbose message), EVEN if autocalibrate=="true".
-#' - COUNTS 30–100 Hz restriction is NOT applied here (belongs to calculate_counts).
+#' Timezone policy:
+#' 1) If timezone/offset is explicitly encoded in raw strings, use it.
+#' 2) If time is numeric epoch-based, treat it as a UTC-origin instant by definition,
+#'    then express output in `tz`.
+#' 3) If time is naive local clock text, interpret it in `tz`.
+#' 4) If raw timezone is not detectable, log that it was assumed.
+#'
+#' Important:
+#' - NO interpolation of X/Y/Z is performed.
+#' - If timestamps are irregular, UA may:
+#'   * snap to nearest grid tick and collapse duplicates by mean, or
+#'   * rebuild a strict time index preserving sample order.
+#'   Neither step interpolates missing values.
+#'
+#' Attached attributes for driver logging:
+#' - attr(out, "ua_time_spec")
+#' - attr(out, "ua_time_report")
 #'
 #' @noRd
 read_and_calibrate_generic <- function(file_path,
@@ -32,30 +32,25 @@ read_and_calibrate_generic <- function(file_path,
                                        tz = "UTC",
                                        autocalibrate = c("auto", "true", "false"),
                                        units = c("auto", "g", "m/s2"),
-                                       # unit detection guardrails
                                        unit_guard_min_n = 5000,
                                        unit_ratio_cutoff = 0.35,
-                                       # auto-cal heuristic (in g)
                                        cal_vm_dev_threshold = 0.03,
-                                       # imputed-zero handling for calibration
                                        zero_triplet_eps = 0,
-                                       # optional explicit column mapping
                                        time_col = NULL,
                                        x_col = NULL,
                                        y_col = NULL,
                                        z_col = NULL,
-                                       # reading options
-                                       delim = NULL,          # NULL -> auto for CSV-like
-                                       header = NA,           # NA -> auto detect
-                                       max_scan = 200000,     # rows to scan for detection
+                                       delim = NULL,
+                                       header = NA,
+                                       max_scan = 200000,
                                        verbose = FALSE) {
 
-  autocalibrate <- match.arg(tolower(autocalibrate), choices = c("auto","true","false"))
+  autocalibrate <- match.arg(tolower(autocalibrate), choices = c("auto", "true", "false"))
   units <- match.arg(units)
 
   stopifnot(is.finite(sample_rate), sample_rate > 0)
+  stopifnot(is.character(tz), length(tz) == 1, nzchar(tz))
 
-  # deps
   if (!requireNamespace("dplyr", quietly = TRUE)) stop("Package 'dplyr' is required.")
   if (!requireNamespace("lubridate", quietly = TRUE)) stop("Package 'lubridate' is required.")
   if (!requireNamespace("stringr", quietly = TRUE)) stop("Package 'stringr' is required.")
@@ -64,9 +59,25 @@ read_and_calibrate_generic <- function(file_path,
   file_path <- normalizePath(file_path, winslash = "/", mustWork = TRUE)
   ext <- tolower(tools::file_ext(file_path))
 
-  # ---------------- helpers ----------------
-  vmsg <- function(...) if (isTRUE(verbose)) message(...)
+  # ---------------------------------------------------------------------------
+  # logging helpers
+  # ---------------------------------------------------------------------------
+  .time_report <- character()
 
+  add_report <- function(...) {
+    .time_report <<- c(.time_report, paste0(...))
+    invisible(NULL)
+  }
+
+  vmsg <- function(...) {
+    if (isTRUE(verbose)) message(...)
+  }
+
+  `%||%` <- function(x, y) if (is.null(x) || length(x) == 0) y else x
+
+  # ---------------------------------------------------------------------------
+  # small utilities
+  # ---------------------------------------------------------------------------
   normalize_names <- function(nm) {
     nm <- gsub("\u00A0", " ", nm, perl = TRUE)
     nm <- trimws(nm)
@@ -76,7 +87,101 @@ read_and_calibrate_generic <- function(file_path,
     nm
   }
 
-  # --- Timestamp repair for MANY broken patterns ---
+  resolve_col <- function(df, col) {
+    if (is.null(col)) return(NULL)
+    if (is.numeric(col) || is.integer(col)) {
+      j <- as.integer(col)
+      if (!is.finite(j) || j < 1L || j > ncol(df)) stop("Column index out of range: ", col)
+      return(names(df)[j])
+    }
+    col <- as.character(col)
+    if (!(col %in% names(df))) {
+      stop("Column not found: ", col, "\nAvailable: ", paste(names(df), collapse = ", "))
+    }
+    col
+  }
+
+  year_penalty <- function(tt) {
+    yy <- suppressWarnings(as.integer(format(tt[1], "%Y")))
+    if (!is.finite(yy)) return(1e6)
+    if (yy < 1990 || yy > 2100) return(1000)
+    0
+  }
+
+  score_regular <- function(tt_num, target_dt) {
+    tt_num <- tt_num[is.finite(tt_num)]
+    if (length(tt_num) < 50) return(Inf)
+    d <- diff(tt_num)
+    d <- d[is.finite(d) & d > 0]
+    if (!length(d)) return(Inf)
+    med <- stats::median(d)
+    mad <- stats::median(abs(d - med))
+    abs(med - target_dt) + mad
+  }
+
+  is_regular_enough <- function(tt, hz, tol = NULL, max_bad_frac = 0.01) {
+    dt <- 1 / hz
+    if (is.null(tol)) tol <- max(0.002, 0.20 * dt)
+    x <- as.numeric(tt)
+    d <- diff(x)
+    d <- d[is.finite(d) & d > 0]
+    if (!length(d)) return(FALSE)
+    bad <- mean(abs(d - dt) > tol)
+    med_ok <- abs(stats::median(d) - dt) <= tol
+    isTRUE(med_ok && bad <= max_bad_frac)
+  }
+
+  # ---------------------------------------------------------------------------
+  # detect metadata block / real data start
+  # ---------------------------------------------------------------------------
+  detect_data_start_row <- function(path, n_lines = 2000, min_cols = 4, win = 10) {
+    if (!(ext %in% c("csv", "gz"))) return(0L)
+
+    lines <- readLines(path, n = n_lines, warn = FALSE)
+    if (!length(lines)) return(0L)
+
+    delim_use <- delim
+    if (is.null(delim_use)) {
+      sniff <- paste(lines[1:min(length(lines), 10)], collapse = "\n")
+      c_comma <- stringr::str_count(sniff, ",")
+      c_semi  <- stringr::str_count(sniff, ";")
+      c_tab   <- stringr::str_count(sniff, "\t")
+      delim_use <- names(which.max(c("," = c_comma, ";" = c_semi, "\t" = c_tab)))
+    }
+
+    split_line <- function(s) strsplit(s, split = delim_use, fixed = TRUE)[[1]]
+    is_num_tok <- function(x) {
+      x <- gsub("\"", "", x)
+      x <- trimws(x)
+      grepl("^[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?$", x)
+    }
+
+    n_tok <- integer(length(lines))
+    p_num <- numeric(length(lines))
+
+    for (i in seq_along(lines)) {
+      tok <- trimws(split_line(lines[i]))
+      tok <- tok[nzchar(tok)]
+      n_tok[i] <- length(tok)
+      p_num[i] <- if (length(tok)) mean(is_num_tok(tok)) else 0
+    }
+
+    for (i in seq_along(lines)) {
+      if (n_tok[i] < min_cols) next
+      if (p_num[i] < 0.70) next
+      j2 <- min(length(lines), i + win - 1L)
+      if (j2 <= i) break
+      if (median(n_tok[i:j2]) < min_cols) next
+      if (mean(p_num[i:j2] >= 0.70) < 0.80) next
+      return(as.integer(i - 1L))
+    }
+
+    0L
+  }
+
+  # ---------------------------------------------------------------------------
+  # timestamp string cleanup / parsing
+  # ---------------------------------------------------------------------------
   canon_ts_chr <- function(x) {
     s <- stringr::str_trim(as.character(x))
     s <- gsub("\u00A0", " ", s, perl = TRUE)
@@ -108,7 +213,6 @@ read_and_calibrate_generic <- function(file_path,
     s <- ifelse(stringr::str_detect(s, "^\\d{1,2}:\\d{2}:\\d{2}$"),
                 paste0(s, ".000"), s)
 
-    # keep ms precision; pad/trim to 3 decimals
     s <- sub("^(.*\\.[0-9]{3})[0-9]+$", "\\1", s, perl = TRUE)
     s <- sub("^(.*\\.[0-9]{2})$", "\\10", s, perl = TRUE)
     s <- sub("^(.*\\.[0-9]{1})$", "\\100", s, perl = TRUE)
@@ -116,7 +220,32 @@ read_and_calibrate_generic <- function(file_path,
     s
   }
 
-  parse_time_string <- function(x_chr) {
+  detect_explicit_tz <- function(x_chr) {
+    s <- canon_ts_chr(x_chr)
+    has_z <- stringr::str_detect(s, "Z$")
+    has_off <- stringr::str_detect(s, "[+-]\\d{2}:?\\d{2}$")
+    any(has_z | has_off, na.rm = TRUE)
+  }
+
+  parse_time_string_detectable_tz <- function(x_chr, output_tz) {
+    s <- canon_ts_chr(x_chr)
+    out <- suppressWarnings(lubridate::parse_date_time(
+      s,
+      orders = c(
+        "Ymd HMSOSz", "Y-m-d H:M:S!OSz",
+        "Ymd HMSz",   "Y-m-d H:M:Sz",
+        "mdY HMSOSz", "m/d/Y H:M:S!OSz", "m/d/y H:M:S!OSz",
+        "mdY HMSz",   "m/d/Y H:M:Sz",    "m/d/y H:M:Sz"
+      ),
+      tz = "UTC",
+      exact = FALSE
+    ))
+    out <- lubridate::with_tz(out, output_tz)
+    attr(out, "tzone") <- output_tz
+    out
+  }
+
+  parse_time_string_local <- function(x_chr, tz_local) {
     s <- canon_ts_chr(x_chr)
     s2 <- sub("(Z|[+-]\\d{2}:?\\d{2})$", "", s, perl = TRUE)
 
@@ -132,136 +261,248 @@ read_and_calibrate_generic <- function(file_path,
         "mdY HM",    "m/d/Y H:M",      "m/d/y H:M",
         "Ymd", "Y-m-d"
       ),
-      tz = tz, exact = FALSE
+      tz = tz_local,
+      exact = FALSE
     ))
   }
 
-  score_regular <- function(tt, target_dt) {
-    tt <- tt[is.finite(tt)]
-    if (length(tt) < 50) return(Inf)
-    d <- diff(as.numeric(tt))
-    d <- d[is.finite(d) & d > 0]
-    if (!length(d)) return(Inf)
-    med <- stats::median(d)
-    mad <- stats::median(abs(d - med))
-    abs(med - target_dt) + mad
-  }
-
-  parse_time_numeric_best <- function(x_num, target_dt = 1 / sample_rate) {
-    x0 <- suppressWarnings(as.numeric(x_num))
-    if (all(is.na(x0))) return(as.POSIXct(rep(NA_real_, length(x_num)), origin = "1970-01-01", tz = tz))
-
-    x <- x0[is.finite(x0)]
-    if (length(x) < 50) return(as.POSIXct(rep(NA_real_, length(x_num)), origin = "1970-01-01", tz = tz))
-
-    cand <- list(
-      unix_s  = function(v) as.POSIXct(v, origin = "1970-01-01", tz = tz),
-      unix_ms = function(v) as.POSIXct(v / 1e3, origin = "1970-01-01", tz = tz),
-      unix_us = function(v) as.POSIXct(v / 1e6, origin = "1970-01-01", tz = tz),
-      unix_ns = function(v) as.POSIXct(v / 1e9, origin = "1970-01-01", tz = tz),
-      excel   = function(v) as.POSIXct((v - 25569) * 86400, origin = "1970-01-01", tz = tz)
-    )
-
-    plaus_penalty <- function(tt) {
-      yr <- suppressWarnings(as.integer(format(tt[1], "%Y")))
-      if (is.na(yr)) return(1e6)
-      if (yr < 1950 || yr > 2100) return(500) else 0
-    }
-
-    scores <- vapply(names(cand), function(nm) {
-      tt <- try(cand[[nm]](x), silent = TRUE)
-      if (inherits(tt, "try-error")) return(Inf)
-      score_regular(tt, target_dt) + plaus_penalty(tt)
-    }, numeric(1))
-
-    best <- names(scores)[which.min(scores)]
-    tt_all <- cand[[best]](x0)
-    vmsg("[GENERIC] numeric time parse chose: ", best, " (score=", signif(min(scores), 4), ")")
-    tt_all
-  }
-
-  parse_time_of_day_only <- function(x_chr) {
+  parse_time_of_day_only <- function(x_chr, tz_local) {
     s <- canon_ts_chr(x_chr)
     is_tod <- stringr::str_detect(s, "^\\d{1,2}:\\d{2}:\\d{2}\\.\\d{3}$")
     if (!any(is_tod)) return(NULL)
 
     date_hit <- stringr::str_extract(s, "\\d{4}-\\d{2}-\\d{2}")
     anchor <- date_hit[which(!is.na(date_hit))[1]]
-    if (is.na(anchor)) anchor <- "1970-01-01"
+    if (is.na(anchor)) return(NULL)
 
     tod <- s[is_tod]
-    out <- as.POSIXct(paste(anchor, tod), tz = tz, format = "%Y-%m-%d %H:%M:%OS3")
-    full <- rep(as.POSIXct(NA_real_, origin = "1970-01-01", tz = tz), length(s))
+    out <- as.POSIXct(paste(anchor, tod), tz = tz_local, format = "%Y-%m-%d %H:%M:%OS3")
+    full <- rep(as.POSIXct(NA_real_, origin = "1970-01-01", tz = tz_local), length(s))
     full[is_tod] <- out
     full
   }
 
-  parse_time_any <- function(x) {
-    if (inherits(x, "POSIXt")) return(lubridate::force_tz(as.POSIXct(x), tz))
-    if (is.numeric(x) || is.integer(x)) return(parse_time_numeric_best(x, target_dt = 1 / sample_rate))
+  parse_time_numeric_best_utc <- function(x_num, target_dt = 1 / sample_rate) {
+    x0 <- suppressWarnings(as.numeric(x_num))
+    if (all(is.na(x0))) {
+      return(list(time_utc = as.POSIXct(rep(NA_real_, length(x_num)), origin = "1970-01-01", tz = "UTC"),
+                  model = NA_character_,
+                  score = Inf))
+    }
+
+    x <- x0[is.finite(x0)]
+    if (length(x) < 50) {
+      return(list(time_utc = as.POSIXct(rep(NA_real_, length(x_num)), origin = "1970-01-01", tz = "UTC"),
+                  model = NA_character_,
+                  score = Inf))
+    }
+
+    cand <- list(
+      epoch_s  = function(v) as.POSIXct(v, origin = "1970-01-01", tz = "UTC"),
+      epoch_ms = function(v) as.POSIXct(v / 1e3, origin = "1970-01-01", tz = "UTC"),
+      epoch_us = function(v) as.POSIXct(v / 1e6, origin = "1970-01-01", tz = "UTC"),
+      epoch_ns = function(v) as.POSIXct(v / 1e9, origin = "1970-01-01", tz = "UTC"),
+      excel    = function(v) as.POSIXct((v - 25569) * 86400, origin = "1970-01-01", tz = "UTC")
+    )
+
+    scores <- vapply(names(cand), function(nm) {
+      tt <- try(cand[[nm]](x), silent = TRUE)
+      if (inherits(tt, "try-error")) return(Inf)
+      score_regular(as.numeric(tt), target_dt) + year_penalty(tt)
+    }, numeric(1))
+
+    best <- names(scores)[which.min(scores)]
+    tt_all <- cand[[best]](x0)
+
+    vmsg("[GENERIC] numeric time parse chose: ", best, " (score=", signif(min(scores), 4), ")")
+
+    list(time_utc = tt_all, model = best, score = min(scores))
+  }
+
+  # Detect epoch anchor + elapsed ticks pattern.
+  # This is only accepted if the anchor is a PLAUSIBLE modern absolute timeline.
+  detect_epoch_plus_elapsed <- function(df, target_dt = 1 / sample_rate) {
+    num_idx <- which(vapply(df, function(x) is.numeric(x) || is.integer(x), logical(1)))
+    if (length(num_idx) < 2) return(NULL)
+
+    n <- nrow(df)
+    idx <- unique(round(seq(1, n, length.out = min(200000, n))))
+
+    best <- list(score = Inf, anchor = NULL, elapsed = NULL, elapsed_unit = NULL, anchor_model = NULL)
+
+    score_elapsed_scale <- function(deltas, unit_scale) {
+      dt_sec <- deltas * unit_scale
+      score_regular(c(0, cumsum(dt_sec)), target_dt)
+    }
+
+    for (a in num_idx) {
+      anchor_parse <- parse_time_numeric_best_utc(df[[a]][idx], target_dt = target_dt)
+      if (is.na(anchor_parse$model)) next
+      if (!is.finite(anchor_parse$score) || anchor_parse$score > 100) next
+
+      ok_rate <- mean(!is.na(anchor_parse$time_utc))
+      if (!is.finite(ok_rate) || ok_rate < 0.90) next
+
+      for (e in setdiff(num_idx, a)) {
+        v <- suppressWarnings(as.numeric(df[[e]][idx]))
+        if (all(!is.finite(v))) next
+        v <- v[is.finite(v)]
+        if (length(v) < 200) next
+
+        dv <- diff(v)
+        dv <- dv[is.finite(dv)]
+        if (!length(dv)) next
+        frac_pos <- mean(dv > 0)
+        if (!is.finite(frac_pos) || frac_pos < 0.90) next
+
+        dv_pos <- dv[dv > 0]
+        if (length(dv_pos) < 50) next
+
+        units_try <- list(ns = 1e-9, us = 1e-6, ms = 1e-3, s = 1)
+        for (unm in names(units_try)) {
+          sc <- score_elapsed_scale(dv_pos, units_try[[unm]]) + anchor_parse$score
+          if (is.finite(sc) && sc < best$score) {
+            best <- list(
+              score = sc,
+              anchor = a,
+              elapsed = e,
+              elapsed_unit = unm,
+              anchor_model = anchor_parse$model
+            )
+          }
+        }
+      }
+    }
+
+    if (!is.finite(best$score) || is.null(best$anchor) || is.null(best$elapsed)) return(NULL)
+
+    best
+  }
+
+  parse_time_any <- function(df, col_idx, output_tz) {
+    x <- df[[col_idx]]
+
+    if (inherits(x, "POSIXt")) {
+      t_local <- lubridate::with_tz(as.POSIXct(x), output_tz)
+      attr(t_local, "tzone") <- output_tz
+      return(list(
+        time = t_local,
+        spec = list(
+          time_source_type = "posix",
+          source_tz_detected = TRUE,
+          source_tz = attr(x, "tzone") %||% "embedded_posix",
+          output_tz = output_tz,
+          tz_rule = "with_tz",
+          model = "posix",
+          score = 0
+        )
+      ))
+    }
+
+    if (is.numeric(x) || is.integer(x)) {
+      p <- parse_time_numeric_best_utc(x, target_dt = 1 / sample_rate)
+      t_local <- lubridate::with_tz(p$time_utc, output_tz)
+      attr(t_local, "tzone") <- output_tz
+      return(list(
+        time = t_local,
+        spec = list(
+          time_source_type = p$model,
+          source_tz_detected = FALSE,
+          source_tz = "UTC-origin instant",
+          output_tz = output_tz,
+          tz_rule = "with_tz",
+          model = p$model,
+          score = p$score
+        )
+      ))
+    }
 
     x_chr <- as.character(x)
 
-    tod <- parse_time_of_day_only(x_chr)
-    if (!is.null(tod) && any(!is.na(tod))) return(tod)
-
-    out <- parse_time_string(x_chr)
-
-    if (all(is.na(out))) {
-      num <- suppressWarnings(as.numeric(x_chr))
-      if (!all(is.na(num))) return(parse_time_numeric_best(num, target_dt = 1 / sample_rate))
+    tod <- parse_time_of_day_only(x_chr, tz_local = output_tz)
+    if (!is.null(tod) && any(!is.na(tod))) {
+      return(list(
+        time = tod,
+        spec = list(
+          time_source_type = "tod_plus_detected_date",
+          source_tz_detected = FALSE,
+          source_tz = paste0("assumed_", output_tz),
+          output_tz = output_tz,
+          tz_rule = "local_parse",
+          model = "tod_plus_date",
+          score = score_regular(as.numeric(tod), 1 / sample_rate) + year_penalty(tod)
+        )
+      ))
     }
-    out
+
+    if (detect_explicit_tz(x_chr)) {
+      out <- parse_time_string_detectable_tz(x_chr, output_tz = output_tz)
+      return(list(
+        time = out,
+        spec = list(
+          time_source_type = "datetime_with_offset",
+          source_tz_detected = TRUE,
+          source_tz = "encoded_in_raw",
+          output_tz = output_tz,
+          tz_rule = "with_tz",
+          model = "datetime_with_offset",
+          score = score_regular(as.numeric(out), 1 / sample_rate) + year_penalty(out)
+        )
+      ))
+    }
+
+    out <- parse_time_string_local(x_chr, tz_local = output_tz)
+    if (!all(is.na(out))) {
+      return(list(
+        time = out,
+        spec = list(
+          time_source_type = "naive_datetime",
+          source_tz_detected = FALSE,
+          source_tz = paste0("assumed_", output_tz),
+          output_tz = output_tz,
+          tz_rule = "local_parse",
+          model = "datetime_string_local",
+          score = score_regular(as.numeric(out), 1 / sample_rate) + year_penalty(out)
+        )
+      ))
+    }
+
+    num <- suppressWarnings(as.numeric(x_chr))
+    if (!all(is.na(num))) {
+      p <- parse_time_numeric_best_utc(num, target_dt = 1 / sample_rate)
+      t_local <- lubridate::with_tz(p$time_utc, output_tz)
+      attr(t_local, "tzone") <- output_tz
+      return(list(
+        time = t_local,
+        spec = list(
+          time_source_type = p$model,
+          source_tz_detected = FALSE,
+          source_tz = "UTC-origin instant",
+          output_tz = output_tz,
+          tz_rule = "with_tz",
+          model = p$model,
+          score = p$score
+        )
+      ))
+    }
+
+    list(
+      time = as.POSIXct(rep(NA_real_, nrow(df)), origin = "1970-01-01", tz = output_tz),
+      spec = list(
+        time_source_type = NA_character_,
+        source_tz_detected = FALSE,
+        source_tz = NA_character_,
+        output_tz = output_tz,
+        tz_rule = NA_character_,
+        model = NA_character_,
+        score = Inf
+      )
+    )
   }
 
-  decide_units_auto <- function(X, Y, Z) {
-    n <- length(X)
-    if (!is.finite(n) || n < unit_guard_min_n) {
-      vmsg("[GENERIC] units=auto but n<", unit_guard_min_n, " -> defaulting to g")
-      return("g")
-    }
-
-    idx <- unique(round(seq(1, n, length.out = min(200000, n))))
-    vm <- sqrt(X[idx]^2 + Y[idx]^2 + Z[idx]^2)
-    vm <- vm[is.finite(vm)]
-    if (length(vm) < 1000) return("g")
-
-    med_vm <- stats::median(vm)
-
-    if (med_vm > 2 && med_vm < 6) {
-      vmsg("[GENERIC] units=auto gray zone (median VM=", signif(med_vm,4), ") -> g")
-      return("g")
-    }
-
-    score_g   <- abs(med_vm - 1.0) / 1.0
-    score_ms2 <- abs(med_vm - 9.80665) / 9.80665
-
-    if (med_vm > 6 && (score_ms2 < unit_ratio_cutoff * score_g)) {
-      vmsg("[GENERIC] units=auto -> m/s2 (median VM=", signif(med_vm,4), ")")
-      return("m/s2")
-    }
-
-    vmsg("[GENERIC] units=auto -> g (median VM=", signif(med_vm,4), ")")
-    "g"
-  }
-
-  convert_to_g <- function(df, units_choice) {
-    if (units_choice == "m/s2") {
-      vmsg("[GENERIC] converting m/s^2 -> g by / 9.80665")
-      df$X <- df$X / 9.80665
-      df$Y <- df$Y / 9.80665
-      df$Z <- df$Z / 9.80665
-    }
-    df
-  }
-
-  needs_autocal <- function(df_g, thr = cal_vm_dev_threshold) {
-    vm <- sqrt(df_g$X^2 + df_g$Y^2 + df_g$Z^2)
-    dev <- stats::median(abs(vm - 1), na.rm = TRUE)
-    vmsg("[GENERIC] median(|VM-1|)=", signif(dev,4), " threshold=", thr)
-    is.finite(dev) && dev > thr
-  }
-
+  # ---------------------------------------------------------------------------
+  # X/Y/Z and time detection
+  # ---------------------------------------------------------------------------
   guess_xyz_by_names <- function(nm) {
     nm0 <- tolower(nm)
     xhit <- grepl("(^x$|accelx|accelerometerx|accel[-_ ]?x|axisx|xaxis|rawx)", nm0)
@@ -277,18 +518,21 @@ read_and_calibrate_generic <- function(file_path,
 
   pick_time_col <- function(df, candidates_idx) {
     target_dt <- 1 / sample_rate
-    best <- list(idx = NA_integer_, score = Inf, ok_rate = 0)
+    best <- list(idx = NA_integer_, score = Inf, ok_rate = 0, spec = NULL)
 
     for (j in candidates_idx) {
-      v <- df[[j]]
-      tt <- parse_time_any(v)
+      p <- parse_time_any(df, j, output_tz = tz)
+      tt <- p$time
       ok <- !is.na(tt)
       ok_rate <- mean(ok)
       if (!is.finite(ok_rate) || ok_rate < 0.80) next
 
-      sc <- score_regular(tt[ok], target_dt)
-      if (is.finite(sc) && sc < best$score) best <- list(idx = j, score = sc, ok_rate = ok_rate)
+      sc <- score_regular(as.numeric(tt[ok]), target_dt) + year_penalty(tt[ok])
+      if (is.finite(sc) && sc < best$score) {
+        best <- list(idx = j, score = sc, ok_rate = ok_rate, spec = p$spec)
+      }
     }
+
     best
   }
 
@@ -301,6 +545,7 @@ read_and_calibrate_generic <- function(file_path,
     idx <- unique(round(seq(1, n, length.out = min(200000, n))))
 
     M <- as.matrix(df[idx, num_idx, drop = FALSE])
+
     keep <- which(colMeans(is.finite(M)) > 0.95)
     if (length(keep) < 3) return(NULL)
     M <- M[, keep, drop = FALSE]
@@ -332,7 +577,9 @@ read_and_calibrate_generic <- function(file_path,
       corr_pen <- mean(pmax(0, 0.05 - off) + pmax(0, off - 0.999))
 
       sc <- scale_pen + 5 * corr_pen
-      if (is.finite(sc) && sc < best$score) best <- list(cols = idx2[cc], score = sc)
+      if (is.finite(sc) && sc < best$score) {
+        best <- list(cols = idx2[cc], score = sc)
+      }
     }
 
     best$cols
@@ -342,11 +589,13 @@ read_and_calibrate_generic <- function(file_path,
     df <- as.data.frame(df)
     if (!is.null(names(df))) names(df) <- normalize_names(names(df))
 
-    if (!is.null(time_col) && !is.null(x_col) && !is.null(y_col) && !is.null(z_col)) {
-      miss <- setdiff(c(time_col, x_col, y_col, z_col), names(df))
-      if (length(miss)) stop("Explicit columns not found: ", paste(miss, collapse = ", "),
-                             "\nAvailable: ", paste(names(df), collapse = ", "))
-      return(list(time_col = time_col, x_col = x_col, y_col = y_col, z_col = z_col, df = df))
+    tc_exp <- resolve_col(df, time_col)
+    xc_exp <- resolve_col(df, x_col)
+    yc_exp <- resolve_col(df, y_col)
+    zc_exp <- resolve_col(df, z_col)
+
+    if (!is.null(tc_exp) && !is.null(xc_exp) && !is.null(yc_exp) && !is.null(zc_exp)) {
+      return(list(time_col = tc_exp, x_col = xc_exp, y_col = yc_exp, z_col = zc_exp, df = df, time_pick = NULL))
     }
 
     nms <- names(df)
@@ -356,10 +605,10 @@ read_and_calibrate_generic <- function(file_path,
       t_idx <- guess_time_by_names(nms)
       xyz <- guess_xyz_by_names(nms)
 
-      tc <- if (!is.null(time_col)) time_col else if (length(t_idx)) nms[t_idx[1]] else NA_character_
-      xc <- if (!is.null(x_col)) x_col else if (length(xyz$x)) nms[xyz$x[1]] else NA_character_
-      yc <- if (!is.null(y_col)) y_col else if (length(xyz$y)) nms[xyz$y[1]] else NA_character_
-      zc <- if (!is.null(z_col)) z_col else if (length(xyz$z)) nms[xyz$z[1]] else NA_character_
+      tc <- tc_exp %||% if (length(t_idx)) nms[t_idx[1]] else NA_character_
+      xc <- xc_exp %||% if (length(xyz$x)) nms[xyz$x[1]] else NA_character_
+      yc <- yc_exp %||% if (length(xyz$y)) nms[xyz$y[1]] else NA_character_
+      zc <- zc_exp %||% if (length(xyz$z)) nms[xyz$z[1]] else NA_character_
 
       if (anyNA(c(tc, xc, yc, zc))) {
         best <- pick_time_col(df, seq_along(df))
@@ -371,39 +620,43 @@ read_and_calibrate_generic <- function(file_path,
           cn <- nms[xyz_idx]
           vv <- vapply(df[xyz_idx], function(v) stats::var(as.numeric(v), na.rm = TRUE), numeric(1))
           ord <- order(vv, decreasing = TRUE)
-          xc <- cn[ord[1]]; yc <- cn[ord[2]]; zc <- cn[ord[3]]
+          xc <- cn[ord[1]]
+          yc <- cn[ord[2]]
+          zc <- cn[ord[3]]
         }
+
+        return(list(time_col = tc, x_col = xc, y_col = yc, z_col = zc, df = df, time_pick = best))
       }
 
-      if (anyNA(c(tc, xc, yc, zc))) {
-        stop("GENERIC loader could not identify required columns (time, X, Y, Z).\n",
-             "Found columns: ", paste(nms, collapse = ", "), "\n",
-             "Tip: pass time_col/x_col/y_col/z_col explicitly.")
-      }
-      return(list(time_col = tc, x_col = xc, y_col = yc, z_col = zc, df = df))
+      return(list(time_col = tc, x_col = xc, y_col = yc, z_col = zc, df = df, time_pick = NULL))
     }
 
     best <- pick_time_col(df, seq_along(df))
     if (is.na(best$idx)) {
-      stop("GENERIC loader could not detect a time column in a headerless/unnamed file.\n",
-           "Tip: pass time_col explicitly (e.g., time_col='v1' or 'v2').")
+      stop("GENERIC loader could not detect a credible time column.\n",
+           "Tip: pass time_col explicitly.")
     }
+
     xyz_idx <- pick_xyz_cols(df, exclude_idx = best$idx)
     if (is.null(xyz_idx) || length(xyz_idx) != 3) {
       stop("GENERIC loader detected time column but could not detect 3 numeric axis columns.\n",
            "Tip: pass x_col/y_col/z_col explicitly.")
     }
-    list(time_col = names(df)[best$idx],
-         x_col = names(df)[xyz_idx[1]],
-         y_col = names(df)[xyz_idx[2]],
-         z_col = names(df)[xyz_idx[3]],
-         df = df)
+
+    list(
+      time_col = names(df)[best$idx],
+      x_col = names(df)[xyz_idx[1]],
+      y_col = names(df)[xyz_idx[2]],
+      z_col = names(df)[xyz_idx[3]],
+      df = df,
+      time_pick = best
+    )
   }
 
-  # -------------- reader --------------
+  # ---------------------------------------------------------------------------
+  # file reading
+  # ---------------------------------------------------------------------------
   read_any <- function(path, ext) {
-
-    # robust header guess that does NOT treat scientific notation "e/E" as header text
     guess_header <- function(lines, sep) {
       if (length(lines) < 2) return(FALSE)
 
@@ -411,7 +664,6 @@ read_and_calibrate_generic <- function(file_path,
       tok1 <- trimws(split_line(lines[1]))
       tok2 <- trimws(split_line(lines[2]))
 
-      # numeric token regex (supports scientific notation)
       is_num <- function(x) {
         x <- gsub("\"", "", x)
         x <- trimws(x)
@@ -422,34 +674,35 @@ read_and_calibrate_generic <- function(file_path,
       p2 <- mean(is_num(tok2))
 
       if (is.finite(p1) && is.finite(p2)) {
-        if (p1 >= 0.8 && p2 >= 0.8) return(FALSE) # data-like then data-like
-        if (p1 <= 0.2 && p2 >= 0.8) return(TRUE)  # name-like then data-like
+        if (p1 >= 0.8 && p2 >= 0.8) return(FALSE)
+        if (p1 <= 0.2 && p2 >= 0.8) return(TRUE)
       }
 
-      # fallback: any obvious name-like token on line1
       any(grepl("[A-Za-z_]", tok1) & !is_num(tok1))
     }
 
     if (ext %in% c("csv", "gz")) {
-      if (!requireNamespace("data.table", quietly = TRUE))
+      if (!requireNamespace("data.table", quietly = TRUE)) {
         stop("Package 'data.table' is required to read CSV/CSV.GZ.")
+      }
 
-      # delimiter sniff
       delim_use <- delim
       if (is.null(delim_use)) {
-        sniff <- readLines(path, n = 5, warn = FALSE)
+        sniff <- readLines(path, n = 10, warn = FALSE)
         sniff <- paste(sniff, collapse = "\n")
         c_comma <- stringr::str_count(sniff, ",")
         c_semi  <- stringr::str_count(sniff, ";")
         c_tab   <- stringr::str_count(sniff, "\t")
-        delim2  <- c("," = c_comma, ";" = c_semi, "\t" = c_tab)
-        delim_use <- names(delim2)[which.max(delim2)]
+        delim_use <- names(which.max(c("," = c_comma, ";" = c_semi, "\t" = c_tab)))
       }
 
-      # header guess (robust)
+      skip_n <- detect_data_start_row(path, n_lines = 2000)
+      if (skip_n > 0) add_report(sprintf("Detected metadata block: skipped first %d lines.", skip_n))
+
       hdr_use <- header
       if (is.na(hdr_use)) {
-        first2 <- readLines(path, n = 2, warn = FALSE)
+        first2 <- readLines(path, n = 2 + skip_n, warn = FALSE)
+        first2 <- tail(first2, 2)
         hdr_use <- guess_header(first2, delim_use)
       }
 
@@ -457,6 +710,7 @@ read_and_calibrate_generic <- function(file_path,
         path,
         sep = delim_use,
         header = isTRUE(hdr_use),
+        skip = skip_n,
         nrows = max_scan,
         showProgress = verbose,
         data.table = FALSE
@@ -464,16 +718,13 @@ read_and_calibrate_generic <- function(file_path,
 
       attr(df, ".generic_delim") <- delim_use
       attr(df, ".generic_header") <- isTRUE(hdr_use)
-      return(df)
-    }
-
-    if (ext == "rds") {
+      attr(df, ".generic_skip") <- skip_n
+      df
+    } else if (ext == "rds") {
       obj <- readRDS(path)
-      if (inherits(obj, "data.frame") || inherits(obj, "data.table")) return(as.data.frame(obj))
-      stop("RDS does not contain a data.frame-like object: ", basename(path))
-    }
-
-    if (ext %in% c("rda", "rdata")) {
+      if (inherits(obj, "data.frame") || inherits(obj, "data.table")) as.data.frame(obj)
+      else stop("RDS does not contain a data.frame-like object: ", basename(path))
+    } else if (ext %in% c("rda", "rdata")) {
       env <- new.env(parent = emptyenv())
       nm <- load(path, envir = env)
       for (k in nm) {
@@ -481,64 +732,50 @@ read_and_calibrate_generic <- function(file_path,
         if (inherits(obj, "data.frame") || inherits(obj, "data.table")) return(as.data.frame(obj))
       }
       stop("RDA/RData contained no data.frame-like object: ", basename(path))
+    } else if (ext %in% c("xlsx", "xls")) {
+      if (!requireNamespace("readxl", quietly = TRUE)) stop("Package 'readxl' is required to read Excel files.")
+      as.data.frame(readxl::read_excel(path, sheet = 1))
+    } else if (ext %in% c("parquet", "feather")) {
+      if (!requireNamespace("arrow", quietly = TRUE)) stop("Package 'arrow' is required to read Parquet/Feather.")
+      if (ext == "parquet") as.data.frame(arrow::read_parquet(path)) else as.data.frame(arrow::read_feather(path))
+    } else {
+      stop("Unsupported file extension for device='generic': .", ext,
+           "\nSupported: csv, csv.gz, rds, rda/RData, xlsx/xls, parquet, feather")
     }
-
-    if (ext %in% c("xlsx", "xls")) {
-      if (!requireNamespace("readxl", quietly = TRUE))
-        stop("Package 'readxl' is required to read Excel files.")
-      return(as.data.frame(readxl::read_excel(path, sheet = 1)))
-    }
-
-    if (ext %in% c("parquet", "feather")) {
-      if (!requireNamespace("arrow", quietly = TRUE))
-        stop("Package 'arrow' is required to read Parquet/Feather.")
-      if (ext == "parquet") return(as.data.frame(arrow::read_parquet(path)))
-      return(as.data.frame(arrow::read_feather(path)))
-    }
-
-    stop("Unsupported file extension for device='generic': .", ext,
-         "\nSupported: csv, csv.gz, rds, rda/RData, xlsx/xls, parquet, feather")
   }
 
   reread_full_csv_if_needed <- function(path, scan_df) {
     if (!(ext %in% c("csv", "gz"))) return(scan_df)
-    if (!requireNamespace("data.table", quietly = TRUE))
+    if (!requireNamespace("data.table", quietly = TRUE)) {
       stop("Package 'data.table' is required to read CSV/CSV.GZ.")
+    }
 
-    delim_use <- attr(scan_df, ".generic_delim"); if (is.null(delim_use)) delim_use <- ","
-    hdr_use   <- attr(scan_df, ".generic_header"); if (is.null(hdr_use)) hdr_use <- TRUE
+    delim_use <- attr(scan_df, ".generic_delim") %||% ","
+    hdr_use   <- attr(scan_df, ".generic_header") %||% TRUE
+    skip_n    <- attr(scan_df, ".generic_skip") %||% 0L
 
     as.data.frame(data.table::fread(
       path,
       sep = delim_use,
       header = isTRUE(hdr_use),
+      skip = skip_n,
       showProgress = verbose,
       data.table = FALSE
     ))
   }
 
-  # ---- HPC-style helpers for agcalibrate stability ----
-  .as_plain_xyz <- function(df) {
-    df <- as.data.frame(df)
-    df <- df[, intersect(names(df), c("time","X","Y","Z")), drop = FALSE]
-    flatten_num <- function(x) if (is.list(x)) as.numeric(unlist(x, use.names = FALSE)) else as.numeric(x)
-    if (!inherits(df$time, "POSIXct")) df$time <- as.POSIXct(df$time, tz = tz)
-    df$X <- flatten_num(df$X); df$Y <- flatten_num(df$Y); df$Z <- flatten_num(df$Z)
-    ok <- is.finite(df$X) & is.finite(df$Y) & is.finite(df$Z) & !is.na(df$time)
-    df <- df[ok, , drop = FALSE]
-    df[order(df$time), , drop = FALSE]
-  }
-
-  .normalize_timeline <- function(df, target_hz) {
-    if (!nrow(df)) return(df)
+  # ---------------------------------------------------------------------------
+  # grid actions (NO interpolation)
+  # ---------------------------------------------------------------------------
+  snap_to_grid_and_collapse <- function(df, hz, tz_out) {
     df <- df[order(df$time), , drop = FALSE]
-    period <- 1 / as.numeric(target_hz)
-    t0     <- as.numeric(df$time[1])
+    period <- 1 / hz
+    t0 <- as.numeric(df$time[1])
     snapped <- round((as.numeric(df$time) - t0) / period) * period + t0
-    tz0 <- attr(df$time, "tzone"); if (is.null(tz0)) tz0 <- tz
-    df$time <- as.POSIXct(snapped, origin = "1970-01-01", tz = tz0)
+    df$time <- as.POSIXct(snapped, origin = "1970-01-01", tz = tz_out)
+    attr(df$time, "tzone") <- tz_out
 
-    df |>
+    out <- df |>
       dplyr::group_by(time) |>
       dplyr::summarise(
         X = mean(X, na.rm = TRUE),
@@ -547,6 +784,38 @@ read_and_calibrate_generic <- function(file_path,
         .groups = "drop"
       ) |>
       as.data.frame()
+
+    out$time <- as.POSIXct(out$time, tz = tz_out)
+    attr(out$time, "tzone") <- tz_out
+    out
+  }
+
+  rebuild_grid_preserve_order <- function(df, hz, tz_out) {
+    df <- df[order(df$time), , drop = FALSE]
+    n <- nrow(df)
+    t0 <- as.POSIXct(df$time[1], tz = tz_out)
+    attr(t0, "tzone") <- tz_out
+    new_time <- t0 + seq(0, by = 1 / hz, length.out = n)
+    attr(new_time, "tzone") <- tz_out
+    df$time <- new_time
+    df
+  }
+
+  # ---------------------------------------------------------------------------
+  # calibration helpers
+  # ---------------------------------------------------------------------------
+  .as_plain_xyz <- function(df, tz_out) {
+    df <- as.data.frame(df)
+    df <- df[, intersect(names(df), c("time", "X", "Y", "Z")), drop = FALSE]
+    flatten_num <- function(x) if (is.list(x)) as.numeric(unlist(x, use.names = FALSE)) else as.numeric(x)
+    df$time <- as.POSIXct(df$time, tz = tz_out)
+    attr(df$time, "tzone") <- tz_out
+    df$X <- flatten_num(df$X)
+    df$Y <- flatten_num(df$Y)
+    df$Z <- flatten_num(df$Z)
+    ok <- is.finite(df$X) & is.finite(df$Y) & is.finite(df$Z) & !is.na(df$time)
+    df <- df[ok, , drop = FALSE]
+    df[order(df$time), , drop = FALSE]
   }
 
   .has_zero_triplets <- function(df, eps = 0) {
@@ -558,35 +827,175 @@ read_and_calibrate_generic <- function(file_path,
     list(df = df[keep, , drop = FALSE], n_dropped = sum(!keep))
   }
 
-  is_regular_enough <- function(tt, hz, tol = NULL, max_bad_frac = 0.01) {
-    dt <- 1 / hz
-    if (is.null(tol)) tol <- max(0.002, 0.20 * dt)
-    x <- as.numeric(tt)
-    d <- diff(x)
-    d <- d[is.finite(d) & d > 0]
-    if (!length(d)) return(FALSE)
+  decide_units_auto <- function(X, Y, Z) {
+    n <- length(X)
+    if (!is.finite(n) || n < unit_guard_min_n) return("g")
 
-    bad <- mean(abs(d - dt) > tol)
-    med_ok <- abs(stats::median(d) - dt) <= tol
-    isTRUE(med_ok && bad <= max_bad_frac)
+    idx <- unique(round(seq(1, n, length.out = min(200000, n))))
+    vm <- sqrt(X[idx]^2 + Y[idx]^2 + Z[idx]^2)
+    vm <- vm[is.finite(vm)]
+    if (length(vm) < 1000) return("g")
+
+    med_vm <- stats::median(vm)
+
+    if (med_vm > 2 && med_vm < 6) return("g")
+
+    score_g   <- abs(med_vm - 1.0) / 1.0
+    score_ms2 <- abs(med_vm - 9.80665) / 9.80665
+
+    if (med_vm > 6 && (score_ms2 < unit_ratio_cutoff * score_g)) return("m/s2")
+    "g"
   }
 
-  rebuild_grid_from_first <- function(t0, n, hz) {
-    t0 <- as.POSIXct(t0, tz = tz)
-    t0 + seq(0, by = 1 / hz, length.out = n)
+  convert_to_g <- function(df, units_choice) {
+    if (units_choice == "m/s2") {
+      df$X <- df$X / 9.80665
+      df$Y <- df$Y / 9.80665
+      df$Z <- df$Z / 9.80665
+    }
+    df
   }
 
-  # ---------------- run ----------------
+  needs_autocal <- function(df_g, thr = cal_vm_dev_threshold) {
+    vm <- sqrt(df_g$X^2 + df_g$Y^2 + df_g$Z^2)
+    dev <- stats::median(abs(vm - 1), na.rm = TRUE)
+    is.finite(dev) && dev > thr
+  }
+
+  # ---------------------------------------------------------------------------
+  # read, detect, parse
+  # ---------------------------------------------------------------------------
   scan_df <- read_any(file_path, ext)
   det <- detect_cols_robust(scan_df)
 
   df0 <- reread_full_csv_if_needed(file_path, scan_df)
   if (!identical(df0, scan_df)) det <- detect_cols_robust(df0)
-
-  tc <- det$time_col; xc <- det$x_col; yc <- det$y_col; zc <- det$z_col
   df0 <- det$df
 
-  time <- parse_time_any(df0[[tc]])
+  tc <- det$time_col
+  xc <- det$x_col
+  yc <- det$y_col
+  zc <- det$z_col
+
+  time_spec <- list(
+    time_source_type = NA_character_,
+    source_tz_detected = NA,
+    source_tz = NA_character_,
+    output_tz = tz,
+    tz_rule = NA_character_,
+    model = NA_character_,
+    grid_action = "kept",
+    units_choice = NA_character_,
+    autocalibrate_setting = autocalibrate,
+    autocalibrated = FALSE,
+    autocalibrate_note = "not_attempted"
+  )
+
+  # Prefer explicit or detected absolute time column.
+  # Only use epoch+elapsed if:
+  # - no explicit time_col given
+  # - detected time candidate is weak / implausible
+  use_epoch_elapsed <- FALSE
+  epoch_elapsed <- NULL
+
+  # first try the nominated/detected time column directly
+  p_main <- parse_time_any(df0, match(tc, names(df0)), output_tz = tz)
+  main_time <- p_main$time
+  main_spec <- p_main$spec
+  main_score <- main_spec$score %||% Inf
+
+  # if main timeline looks implausible (e.g. 1970) and no explicit time_col,
+  # allow epoch+elapsed rescue
+  if (is.null(time_col)) {
+    epoch_elapsed <- detect_epoch_plus_elapsed(df0, target_dt = 1 / sample_rate)
+    if (!is.null(epoch_elapsed)) {
+      # prefer epoch+elapsed only if better than main parse
+      if (!is.finite(main_score) || epoch_elapsed$score + 5 < main_score) {
+        use_epoch_elapsed <- TRUE
+      }
+    }
+  }
+
+  if (use_epoch_elapsed) {
+    anchor_idx <- epoch_elapsed$anchor
+    elapsed_idx <- epoch_elapsed$elapsed
+
+    anchor_parse <- parse_time_numeric_best_utc(df0[[anchor_idx]], target_dt = 1 / sample_rate)
+    anchor_utc <- anchor_parse$time_utc
+    elapsed_raw <- suppressWarnings(as.numeric(df0[[elapsed_idx]]))
+    ok <- is.finite(elapsed_raw) & !is.na(anchor_utc)
+
+    if (!any(ok)) {
+      time <- main_time
+      time_spec <- utils::modifyList(time_spec, main_spec)
+      add_report("Epoch+elapsed rescue was considered but could not be reconstructed; standard detected time column was used.")
+    } else {
+      e0 <- elapsed_raw[ok][1]
+      delta_ticks <- elapsed_raw - e0
+      unit_scale <- switch(epoch_elapsed$elapsed_unit,
+                           ns = 1e-9, us = 1e-6, ms = 1e-3, s = 1, 1e-9)
+      delta_sec <- delta_ticks * unit_scale
+      time_utc <- anchor_utc + delta_sec
+      time <- lubridate::with_tz(time_utc, tz)
+      attr(time, "tzone") <- tz
+
+      time_spec <- utils::modifyList(time_spec, list(
+        time_source_type = paste0(epoch_elapsed$anchor_model, "+elapsed_", epoch_elapsed$elapsed_unit),
+        source_tz_detected = FALSE,
+        source_tz = "UTC-origin instant",
+        output_tz = tz,
+        tz_rule = "with_tz",
+        model = "epoch_plus_elapsed",
+        anchor_col = names(df0)[anchor_idx],
+        elapsed_col = names(df0)[elapsed_idx],
+        elapsed_unit = epoch_elapsed$elapsed_unit,
+        score = epoch_elapsed$score
+      ))
+
+      add_report(sprintf(
+        "Detected dual time columns: anchor=%s (%s), elapsed=%s (%s).",
+        names(df0)[anchor_idx], epoch_elapsed$anchor_model,
+        names(df0)[elapsed_idx], epoch_elapsed$elapsed_unit
+      ))
+      add_report(sprintf(
+        "Timezone handling: anchor treated as UTC-origin instant; output expressed in %s.",
+        tz
+      ))
+      add_report("Caution: verify that the automatically used timezone is appropriate for your device/export settings.")
+    }
+  } else {
+    time <- main_time
+    time_spec <- utils::modifyList(time_spec, main_spec)
+
+    if (isTRUE(time_spec$source_tz_detected)) {
+      add_report(sprintf(
+        "Detected time column '%s' with timezone/offset explicitly encoded in raw data.",
+        tc
+      ))
+      add_report(sprintf(
+        "Timezone handling: source timezone detected from raw; output expressed in %s.",
+        tz
+      ))
+    } else {
+      add_report(sprintf(
+        "Detected time column '%s' with time model '%s'.",
+        tc, time_spec$model
+      ))
+      if (identical(time_spec$tz_rule, "with_tz")) {
+        add_report(sprintf(
+          "Timezone handling: raw time treated as UTC-origin instant; output expressed in %s.",
+          tz
+        ))
+      } else {
+        add_report(sprintf(
+          "Timezone handling: raw time had no detectable timezone; interpreted using %s.",
+          tz
+        ))
+      }
+      add_report("Caution: raw timezone was not explicitly detectable. Verify that the automatically used timezone is appropriate for your data.")
+    }
+  }
+
   X <- suppressWarnings(as.numeric(df0[[xc]]))
   Y <- suppressWarnings(as.numeric(df0[[yc]]))
   Z <- suppressWarnings(as.numeric(df0[[zc]]))
@@ -597,40 +1006,79 @@ read_and_calibrate_generic <- function(file_path,
 
   if (!nrow(raw)) stop("No samples after read: ", basename(file_path))
 
-  if (verbose) {
-    message("[GENERIC] columns: time=", tc, " X=", xc, " Y=", yc, " Z=", zc,
-            " n=", nrow(raw), " (file=", basename(file_path), ")")
+  # hard safeguard against bogus 1970 anchoring
+  first_year <- suppressWarnings(as.integer(format(raw$time[1], "%Y")))
+  if (is.finite(first_year) && first_year == 1970) {
+    stop(
+      "GENERIC loader detected a timeline anchored to 1970-01-01.\n",
+      "This usually means an elapsed/time-of-day column was selected without a credible calendar date anchor.\n",
+      "Pass time_col explicitly or verify the raw file contains an absolute timestamp column."
+    )
   }
 
-  if (!is_regular_enough(raw$time, hz = sample_rate)) {
-    vmsg("[GENERIC] irregular/unsafe timestamping detected -> rebuilding regular grid from first valid time")
-    raw$time <- rebuild_grid_from_first(raw$time[1], nrow(raw), hz = sample_rate)
+  add_report(sprintf(
+    "Columns selected: time=%s, X=%s, Y=%s, Z=%s. Rows kept after filtering=%d.",
+    tc, xc, yc, zc, nrow(raw)
+  ))
+  add_report(sprintf(
+    "Timeline span after parsing: first=%s ; last=%s",
+    format(raw$time[1], tz = tz, usetz = TRUE),
+    format(raw$time[nrow(raw)], tz = tz, usetz = TRUE)
+  ))
+
+  # ---------------------------------------------------------------------------
+  # grid handling (NO interpolation)
+  # ---------------------------------------------------------------------------
+  if (is_regular_enough(raw$time, hz = sample_rate)) {
+    time_spec$grid_action <- "kept"
+    add_report(sprintf("Timeline regularity check passed for %g Hz. Original timeline retained.", sample_rate))
+  } else {
+    add_report(sprintf(
+      "Timeline irregular/unsafe for declared %g Hz. Applying snap-to-grid with duplicate collapse first (no interpolation).",
+      sample_rate
+    ))
+
+    snapped <- snap_to_grid_and_collapse(raw, hz = sample_rate, tz_out = tz)
+    if (is_regular_enough(snapped$time, hz = sample_rate)) {
+      raw <- tibble::as_tibble(snapped)
+      time_spec$grid_action <- "snapped"
+      add_report("Grid action used: snapped. Timestamps were rounded to nearest grid tick and duplicate ticks were averaged.")
+    } else {
+      raw <- tibble::as_tibble(rebuild_grid_preserve_order(raw, hz = sample_rate, tz_out = tz))
+      time_spec$grid_action <- "rebuilt"
+      add_report("Grid action used: rebuilt. A strict time index of length N was rebuilt preserving sample order.")
+      add_report("Important: this does not interpolate missing values; it only reindexes observed samples.")
+    }
   }
 
-  units_choice <- units
-  if (units == "auto") units_choice <- decide_units_auto(raw$X, raw$Y, raw$Z)
+  # ---------------------------------------------------------------------------
+  # units
+  # ---------------------------------------------------------------------------
+  units_choice <- if (units == "auto") decide_units_auto(raw$X, raw$Y, raw$Z) else units
   raw <- convert_to_g(raw, units_choice)
+  time_spec$units_choice <- units_choice
+  add_report(sprintf("Units handling: requested=%s, used=%s.", units, units_choice))
 
+  # ---------------------------------------------------------------------------
+  # autocalibration
+  # ---------------------------------------------------------------------------
   do_cal <- switch(
     autocalibrate,
     "true"  = TRUE,
     "false" = FALSE,
     "auto"  = needs_autocal(raw)
   )
+  add_report(sprintf("Autocalibration: setting=%s, decision=%s.", autocalibrate, if (do_cal) "YES" else "NO"))
 
-  if (do_cal) {
-    if (!requireNamespace("agcounts", quietly = TRUE)) {
-      message("[GENERIC] agcounts not installed -> proceeding UNCALIBRATED")
-      do_cal <- FALSE
-    }
+  if (do_cal && !requireNamespace("agcounts", quietly = TRUE)) {
+    do_cal <- FALSE
+    time_spec$autocalibrated <- FALSE
+    time_spec$autocalibrate_note <- "agcounts_missing"
+    add_report("Autocalibration could not run because package 'agcounts' is not installed. Proceeding uncalibrated.")
   }
 
   if (do_cal) {
-    raw2 <- .as_plain_xyz(raw)
-    raw2 <- .normalize_timeline(raw2, target_hz = sample_rate)
-
-    vmsg("[GENERIC] applying agcounts::agcalibrate() (best-effort)")
-
+    raw2 <- .as_plain_xyz(raw, tz_out = tz)
     cal <- NULL
     cal_err <- NULL
 
@@ -641,10 +1089,12 @@ read_and_calibrate_generic <- function(file_path,
     if (is.null(cal)) {
       msg0 <- if (!is.null(cal_err)) conditionMessage(cal_err) else "Unknown error"
 
-      if (grepl("imputed zero", msg0, ignore.case = TRUE) || .has_zero_triplets(raw2, eps = zero_triplet_eps)) {
+      if (.has_zero_triplets(raw2, eps = zero_triplet_eps)) {
         z <- .drop_zero_triplets(raw2, eps = zero_triplet_eps)
-        vmsg(sprintf("[GENERIC] removed %d zero-triplet rows (%.3f%%), retry calibrate",
-                     z$n_dropped, 100 * z$n_dropped / nrow(raw2)))
+        add_report(sprintf(
+          "Calibration retry: removed %d zero-triplet rows (%.3f%%).",
+          z$n_dropped, 100 * z$n_dropped / nrow(raw2)
+        ))
         cal <- tryCatch(
           agcounts::agcalibrate(raw = z$df, verbose = FALSE, tz = tz),
           error = function(e) { cal_err <<- e; NULL }
@@ -653,35 +1103,68 @@ read_and_calibrate_generic <- function(file_path,
 
       if (is.null(cal)) {
         msg1 <- if (!is.null(cal_err)) conditionMessage(cal_err) else msg0
-        message("[GENERIC] agcalibrate failed -> proceeding UNCALIBRATED: ", msg1)
+        time_spec$autocalibrated <- FALSE
+        time_spec$autocalibrate_note <- paste0("failed:", msg1)
+        add_report(paste0("Autocalibration failed. Proceeding uncalibrated. Reason: ", msg1))
         cal <- raw2
+      } else {
+        time_spec$autocalibrated <- TRUE
+        time_spec$autocalibrate_note <- "ok_after_zero_drop"
+        add_report("Autocalibration succeeded after retry.")
       }
+    } else {
+      time_spec$autocalibrated <- TRUE
+      time_spec$autocalibrate_note <- "ok"
+      add_report("Autocalibration succeeded.")
     }
 
     cal <- as.data.frame(cal)
-    if (!all(c("time","X","Y","Z") %in% names(cal))) {
-      message("[GENERIC] calibrated output missing required columns -> proceeding UNCALIBRATED")
+    if (!all(c("time", "X", "Y", "Z") %in% names(cal))) {
+      time_spec$autocalibrated <- FALSE
+      time_spec$autocalibrate_note <- "bad_cal_output"
+      add_report("Autocalibration output did not contain required columns. Proceeding uncalibrated.")
       cal <- raw2
     }
 
-    raw <- tibble::as_tibble(cal) |>
-      dplyr::transmute(
-        time = lubridate::force_tz(as.POSIXct(time), tz),
-        X = as.numeric(X), Y = as.numeric(Y), Z = as.numeric(Z)
-      ) |>
+    raw <- tibble::tibble(
+      time = as.POSIXct(cal$time, tz = tz),
+      X = as.numeric(cal$X),
+      Y = as.numeric(cal$Y),
+      Z = as.numeric(cal$Z)
+    ) |>
       dplyr::filter(!is.na(time) & is.finite(X) & is.finite(Y) & is.finite(Z)) |>
       dplyr::arrange(time)
 
+    attr(raw$time, "tzone") <- tz
+
     if (!nrow(raw)) stop("No samples after calibration fallback: ", basename(file_path))
-  } else {
-    vmsg("[GENERIC] skipping autocalibration")
   }
 
-  n  <- nrow(raw)
+  # ---------------------------------------------------------------------------
+  # final strict output grid
+  # ---------------------------------------------------------------------------
+  n <- nrow(raw)
   t0 <- lubridate::floor_date(raw$time[1], "second")
+  t0 <- as.POSIXct(t0, tz = tz)
+  attr(t0, "tzone") <- tz
 
-  tibble::tibble(
+  out <- tibble::tibble(
     time = t0 + seq(0, by = 1 / sample_rate, length.out = n),
-    X = raw$X, Y = raw$Y, Z = raw$Z
+    X = raw$X,
+    Y = raw$Y,
+    Z = raw$Z
   )
+  attr(out$time, "tzone") <- tz
+
+  add_report(sprintf(
+    "Final output timeline: first=%s ; last=%s ; tz_used=%s",
+    format(out$time[1], tz = tz, usetz = TRUE),
+    format(out$time[nrow(out)], tz = tz, usetz = TRUE),
+    tz
+  ))
+
+  attr(out, "ua_time_spec") <- time_spec
+  attr(out, "ua_time_report") <- unique(.time_report)
+
+  out
 }
