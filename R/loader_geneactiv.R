@@ -1,73 +1,182 @@
 # R/geneactiv_loader.R
+#' Read and calibrate GENEActiv .bin
+#'
+#' Tries GENEAread::recalibrate() first. On Windows, GENEAread can be
+#' sensitive to directory strings, so UA normalizes and forces trailing
+#' slashes on datadir/outputdir before calling recalibrate().
+#'
+#' If recalibration succeeds and a recalibrated .bin is found, that file
+#' is read. Otherwise UA falls back to direct read of the original .bin and
+#' records the reason in the loader log metadata.
 #' @noRd
-# Calibrate + read GENEActiv .bin in one go, with safe fallback for tiny demo files
 read_and_calibrate_geneactiv <- function(file_path,
-                                         sample_rate   = 100,
-                                         tz            = "UTC",
-                                         use_header_cal= TRUE,
-                                         spherecrit    = 0.3,
-                                         minloadcrit   = 24,
-                                         chunksize     = 0.5,
-                                         windowsizes   = c(5, 900, 3600),
-                                         verbose       = FALSE) {
+                                         sample_rate    = 100,
+                                         tz             = "UTC",
+                                         use_header_cal = TRUE,
+                                         spherecrit     = 0.3,
+                                         minloadcrit    = 24,
+                                         chunksize      = 0.5,
+                                         windowsizes    = c(5, 900, 3600),
+                                         verbose        = FALSE) {
   if (!requireNamespace("GENEAread", quietly = TRUE))
-    stop("Package GENEAread not installed.")
+    stop("Package 'GENEAread' not installed.")
+  if (!requireNamespace("dplyr", quietly = TRUE))
+    stop("Package 'dplyr' is required.")
+  if (!requireNamespace("lubridate", quietly = TRUE))
+    stop("Package 'lubridate' is required.")
+  if (!requireNamespace("tibble", quietly = TRUE))
+    stop("Package 'tibble' is required.")
 
   file_path <- normalizePath(file_path, winslash = "/", mustWork = TRUE)
-  size_mb   <- as.numeric(file.info(file_path)$size) / (1024^2)
 
-  # ---- FAST PATH for tiny demo files: skip recalibration, just read.bin() ----
-  if (!is.na(size_mb) && size_mb < 1) {
-    if (verbose) message("[GENEA] demo-sized file (", sprintf("%.1f MB", size_mb),
-                         ") -> skipping recalibration; using header calibration only")
-    bin <- GENEAread::read.bin(file_path, calibrate = use_header_cal, verbose = FALSE)
-    return(.genea_bin_to_tbl(bin, sample_rate, tz))
+  add_trailing_slash_existing <- function(x) {
+    x <- normalizePath(x, winslash = "/", mustWork = TRUE)
+    if (!grepl("/$", x)) x <- paste0(x, "/")
+    x
   }
 
-  # ---- Normal path: recalibrate into a temp folder, then read the calibrated copy ----
-  out_recal <- tempfile("GENEA_recal_")
-  dir.create(out_recal, recursive = TRUE, showWarnings = FALSE)
-  on.exit(unlink(out_recal, recursive = TRUE), add = TRUE)
+  add_trailing_slash_any <- function(x) {
+    x <- normalizePath(x, winslash = "/", mustWork = FALSE)
+    if (!grepl("/$", x)) x <- paste0(x, "/")
+    x
+  }
 
-  # Try recalibrate; if it fails (short file, etc.), fall back to direct read
-  ok <- try({
-    GENEAread::recalibrate(
-      datadir      = dirname(file_path),
-      outputdir    = out_recal,
-      use.temp     = TRUE,
-      spherecrit   = spherecrit,
-      minloadcrit  = minloadcrit,
-      printsummary = verbose,
-      chunksize    = chunksize,
-      windowsizes  = windowsizes
+  file_dir <- add_trailing_slash_existing(dirname(file_path))
+
+  # temp output dir path does not exist yet, so mustWork must be FALSE here
+  out_recal_base <- tempfile("GENEA_recal_dir_")
+  dir.create(out_recal_base, recursive = TRUE, showWarnings = FALSE)
+  out_recal <- add_trailing_slash_existing(out_recal_base)
+
+  on.exit(unlink(sub("/$", "", out_recal), recursive = TRUE), add = TRUE)
+
+  stem <- tools::file_path_sans_ext(basename(file_path))
+
+  loader_notes <- c(
+    paste0("GENEActiv input file: ", basename(file_path)),
+    paste0("GENEActiv datadir used for recalibrate(): ", file_dir),
+    paste0("GENEActiv outputdir used for recalibrate(): ", out_recal),
+    "GENEActiv recalibration was attempted."
+  )
+
+  calibration_attempted <- TRUE
+  calibration_success <- FALSE
+  calibration_note <- "not_attempted"
+  calibration_source <- "GENEAread_recalibrate"
+
+  recal_err <- NULL
+
+  tryCatch(
+    {
+      invisible(
+        capture.output(
+          GENEAread::recalibrate(
+            datadir      = file_dir,
+            outputdir    = out_recal,
+            use.temp     = TRUE,
+            spherecrit   = spherecrit,
+            minloadcrit  = minloadcrit,
+            printsummary = verbose,
+            chunksize    = chunksize,
+            windowsizes  = windowsizes
+          ),
+          type = "output"
+        )
+      )
+    },
+    error = function(e) {
+      recal_err <<- conditionMessage(e)
+    }
+  )
+
+  all_out_tmp <- list.files(out_recal, full.names = TRUE, recursive = TRUE)
+  all_bin_tmp <- list.files(out_recal, pattern = "\\.bin$", full.names = TRUE, recursive = TRUE)
+
+  loader_notes <- c(
+    loader_notes,
+    paste0("Files found in recalibration output dir: ", length(all_out_tmp))
+  )
+
+  if (length(all_out_tmp)) {
+    loader_notes <- c(
+      loader_notes,
+      paste0("Output dir files: ", paste(basename(all_out_tmp), collapse = "; "))
     )
-    TRUE
-  }, silent = TRUE)
+  } else {
+    loader_notes <- c(loader_notes, "No files found in recalibration output dir.")
+  }
 
   target <- NULL
-  if (isTRUE(ok)) {
-    stem <- tools::file_path_sans_ext(basename(file_path))
-    cand <- list.files(out_recal, pattern = paste0("^", stem, ".*\\.bin$"), full.names = TRUE)
-    if (length(cand)) {
-      info   <- file.info(cand)
-      target <- cand[which.max(info$mtime)]  # freshest
+
+  preferred_tmp <- all_bin_tmp[grepl(paste0("^", stem, "_Recalibrate\\.bin$"), basename(all_bin_tmp))]
+  if (length(preferred_tmp)) {
+    info <- file.info(preferred_tmp)
+    target <- preferred_tmp[which.max(info$mtime)]
+    loader_notes <- c(loader_notes, paste0("Selected recalibrated BIN in output dir: ", basename(target)))
+  }
+
+  if (is.null(target)) {
+    cand_tmp <- all_bin_tmp[grepl(stem, basename(all_bin_tmp), fixed = TRUE)]
+    if (length(cand_tmp)) {
+      info <- file.info(cand_tmp)
+      target <- cand_tmp[which.max(info$mtime)]
+      loader_notes <- c(loader_notes, paste0("Selected stem-matched BIN in output dir: ", basename(target)))
     }
   }
 
-  # If no calibrated file appeared, fall back to direct read
-  if (is.null(target) || !file.exists(target)) {
-    if (verbose) message("[GENEA] recalibration unavailable -> using header calibration directly")
-    bin <- GENEAread::read.bin(file_path, calibrate = use_header_cal, verbose = FALSE)
-    return(.genea_bin_to_tbl(bin, sample_rate, tz))
+  if (is.null(target)) {
+    all_bin_src <- list.files(file_dir, pattern = "\\.bin$", full.names = TRUE, recursive = FALSE)
+    preferred_src <- all_bin_src[grepl(paste0("^", stem, "_Recalibrate\\.bin$"), basename(all_bin_src))]
+    if (length(preferred_src)) {
+      info <- file.info(preferred_src)
+      target <- preferred_src[which.max(info$mtime)]
+      loader_notes <- c(
+        loader_notes,
+        "No recalibrated BIN found in temp output dir; source folder was inspected.",
+        paste0("Selected recalibrated BIN in source dir: ", basename(target))
+      )
+    }
   }
 
-  # Otherwise read the calibrated copy
-  bin <- GENEAread::read.bin(target, calibrate = use_header_cal, verbose = FALSE)
-  .genea_bin_to_tbl(bin, sample_rate, tz)
-}
+  if (!is.null(recal_err)) {
+    loader_notes <- c(loader_notes, paste0("GENEActiv recalibration error captured: ", recal_err))
+  }
 
-# helper to convert GENEAread bin to tibble with aligned time grid
-.genea_bin_to_tbl <- function(bin, sample_rate, tz) {
+  if (!is.null(target) && file.exists(target)) {
+    bin <- tryCatch(
+      GENEAread::read.bin(target, calibrate = use_header_cal, verbose = FALSE),
+      error = function(e) {
+        stop("Failed to read recalibrated GENEActiv file '", basename(target),
+             "'. Reason: ", conditionMessage(e))
+      }
+    )
+
+    calibration_success <- TRUE
+    calibration_note <- "ok"
+    loader_notes <- c(loader_notes, "GENEActiv recalibration output was located and used.")
+  } else {
+    bin <- tryCatch(
+      GENEAread::read.bin(file_path, calibrate = use_header_cal, verbose = FALSE),
+      error = function(e) {
+        stop("GENEActiv direct read also failed for file '", basename(file_path),
+             "'. Reason: ", conditionMessage(e))
+      }
+    )
+
+    calibration_success <- FALSE
+    calibration_note <- if (!is.null(recal_err)) {
+      paste0("recalibration_failed_direct_read_used:", recal_err)
+    } else {
+      "recalibration_output_not_found_direct_read_used"
+    }
+
+    loader_notes <- c(
+      loader_notes,
+      "No usable recalibrated BIN output could be located.",
+      "Fallback direct read of the original BIN file was used."
+    )
+  }
+
   df <- tibble::tibble(
     time = as.POSIXct(bin$data.out[, "timestamp"], origin = "1970-01-01", tz = tz),
     X    = as.numeric(bin$data.out[, "x"]),
@@ -77,12 +186,48 @@ read_and_calibrate_geneactiv <- function(file_path,
     dplyr::filter(!is.na(time) & is.finite(X) & is.finite(Y) & is.finite(Z)) |>
     dplyr::arrange(time)
 
-  if (!nrow(df)) stop("No samples after read: ", utils::tail(bin$header$file.name, 1))
+  if (!nrow(df)) {
+    stop("No samples after GENEActiv read: ", basename(file_path))
+  }
 
   n  <- nrow(df)
   t0 <- lubridate::floor_date(df$time[1], "second")
-  tibble::tibble(
+
+  out <- tibble::tibble(
     time = t0 + seq(0, by = 1 / sample_rate, length.out = n),
-    X = df$X, Y = df$Y, Z = df$Z
+    X = df$X,
+    Y = df$Y,
+    Z = df$Z
   )
+
+  spec <- list(
+    model = "geneactiv_bin",
+    source_tz_detected = TRUE,
+    source_tz = tz,
+    compute_tz = tz,
+    output_tz = tz,
+    tz_rule = "compute_in_source_tz",
+    grid_action = "reindexed",
+    regularized_for_uniformity = FALSE,
+    calibration_input_provenance = "device_loader_native",
+    calibration_expected = TRUE,
+    calibration_source = calibration_source,
+    calibration_attempted = calibration_attempted,
+    calibration_success = calibration_success,
+    calibration_note = calibration_note,
+    units_choice = "g",
+    autocalibrated = calibration_success,
+    autocalibrate_note = calibration_note
+  )
+
+  loader_notes <- c(
+    loader_notes,
+    "Output timeline was rebuilt to the requested sample_rate by order-preserving reindex.",
+    "No X/Y/Z interpolation was performed in UA."
+  )
+
+  attr(out, "ua_time_spec") <- spec
+  attr(out, "ua_time_report") <- loader_notes
+
+  out
 }

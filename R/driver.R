@@ -14,21 +14,6 @@
 #' - logs also display timestamps in the user-requested `tz`
 #' - timezone conversion for display/export uses lubridate::with_tz()
 #'
-#' @param device "actigraph", "axivity", "geneactiv", or "generic"
-#' @param data_folder Input folder of native files
-#' @param output_folder Output folder for CSVs
-#' @param epochs Numeric vector of epoch lengths in seconds
-#' @param sample_rate Target Hz for loaders that need a grid
-#' @param dynamic_range g-range for MIMS (length-2, e.g., c(-8, 8))
-#' @param apply_nonwear Logical; if TRUE, compute Choi flags (requires Vector.Magnitude).
-#'   For generic runs, if Vector.Magnitude is not present because COUNTS wasn't requested,
-#'   UA will attempt to compute COUNTS internally (only if Hz supports it) to obtain VM.
-#' @param metrics Character vector of metrics to compute. Any of:
-#'   c("MIMS","AI","COUNTS","ENMO","MAD","ROCAM"). Defaults to all.
-#' @param tz Timezone for timestamps (passed to loaders and used for final CSV writing)
-#' @param generic_autocalibrate For device="generic": "auto","true","false"
-#' @param generic_units For device="generic": "auto","g","m/s2"
-#' @param generic_verbose For device="generic": extra messages
 #' @export
 accel_summaries <- function(device, data_folder, output_folder,
                             epochs = 60,
@@ -51,29 +36,21 @@ accel_summaries <- function(device, data_folder, output_folder,
 
   stopifnot(is.character(tz), length(tz) == 1, nzchar(tz))
 
-  # Validate timezone early
   tz_ok <- tryCatch({
     x <- as.POSIXct("1970-01-01 00:00:00", tz = tz)
     !is.na(x)
   }, error = function(e) FALSE)
 
-  if (!isTRUE(tz_ok)) {
-    stop("Invalid timezone supplied to `tz`: ", tz)
-  }
+  if (!isTRUE(tz_ok)) stop("Invalid timezone supplied to `tz`: ", tz)
 
   if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
   `%||%` <- function(x, y) if (is.null(x) || length(x) == 0) y else x
-
   counts_supported_hz <- function(sr) sr %in% c(30,40,50,60,70,80,90,100)
 
-  # ---------------------------------------------------------------------------
-  # time helpers
-  # ---------------------------------------------------------------------------
   force_posix_time <- function(x) {
     if (inherits(x, "POSIXt")) return(x)
-    y <- suppressWarnings(as.POSIXct(x, origin = "1970-01-01", tz = "UTC"))
-    y
+    suppressWarnings(as.POSIXct(x, origin = "1970-01-01", tz = "UTC"))
   }
 
   format_time_in_tz <- function(x, tz_out, fmt = "%Y-%m-%d %H:%M:%OS3") {
@@ -87,9 +64,23 @@ accel_summaries <- function(device, data_folder, output_folder,
     out
   }
 
-  # ---------------------------------------------------------------------------
-  # log helpers
-  # ---------------------------------------------------------------------------
+  pretty_cal_status <- function(spec) {
+    src  <- spec$calibration_source %||% ""
+    ok   <- isTRUE(spec$calibration_success)
+    note <- spec$calibration_note %||% spec$autocalibrate_note %||% ""
+
+    if (ok) {
+      if (identical(src, "upstream_resampled_calibrated")) return("yes (upstream)")
+      if (grepl("^applied_with_caution:", note)) return("yes (caution)")
+      return("yes")
+    }
+
+    if (grepl("^user_disabled", note)) return("no (user disabled)")
+    if (grepl("^skipped_due_to_severely_irregular_source_grid", note)) return("no (irregular grid)")
+    if (grepl("^failed:", note)) return("no (failed)")
+    if (grepl("^agcounts_missing", note)) return("no (agcounts missing)")
+    "no"
+  }
   run_start <- Sys.time()
   run_id <- format(run_start, "%Y%m%d_%H%M%S")
   log_path <- file.path(output_folder, paste0("UA_summarypreprocessing_Log_", run_id, ".txt"))
@@ -118,9 +109,6 @@ accel_summaries <- function(device, data_folder, output_folder,
     invisible(NULL)
   }
 
-  # ---------------------------------------------------------------------------
-  # loader selection
-  # ---------------------------------------------------------------------------
   loader <- switch(tolower(device),
                    "actigraph" = read_and_calibrate_actigraph,
                    "axivity"   = read_and_calibrate_axivity,
@@ -139,9 +127,6 @@ accel_summaries <- function(device, data_folder, output_folder,
                         ". Valid: actigraph, axivity, geneactiv, generic")
   )
 
-  # ---------------------------------------------------------------------------
-  # file pattern
-  # ---------------------------------------------------------------------------
   pattern <- switch(tolower(device),
                     "actigraph" = "\\.gt3x$",
                     "axivity"   = "\\.csv(\\.gz)?$",
@@ -155,9 +140,6 @@ accel_summaries <- function(device, data_folder, output_folder,
     return(invisible(NULL))
   }
 
-  # ---------------------------------------------------------------------------
-  # metric registry
-  # ---------------------------------------------------------------------------
   metrics_in <- toupper(metrics)
   valid <- c("MIMS","AI","COUNTS","ENMO","MAD","ROCAM")
   unknown <- setdiff(metrics_in, valid)
@@ -184,9 +166,6 @@ accel_summaries <- function(device, data_folder, output_folder,
     ROCAM  = function(d,f,e)  calculate_rocam(d, f, e)
   )
 
-  # ---------------------------------------------------------------------------
-  # nonwear helper
-  # ---------------------------------------------------------------------------
   mark_nonwear_epoch <- function(joined, epoch_sec) {
     if (!("Vector.Magnitude" %in% names(joined))) {
       joined$choi_nonwear <- FALSE
@@ -226,9 +205,6 @@ accel_summaries <- function(device, data_folder, output_folder,
       dplyr::mutate(choi_nonwear = FALSE)
   }
 
-  # ---------------------------------------------------------------------------
-  # write log header
-  # ---------------------------------------------------------------------------
   header_lines <- c(
     "UNIVERSALACCEL SUMMARY PREPROCESSING LOG",
     paste0("Run ID: ", run_id),
@@ -257,15 +233,10 @@ accel_summaries <- function(device, data_folder, output_folder,
   )
   writeLines(header_lines, con = log_path)
 
-  # ---------------------------------------------------------------------------
-  # main epoch loop
-  # ---------------------------------------------------------------------------
   for (epoch in epochs) {
     epoch <- as.integer(epoch)
     if (!is.finite(epoch) || epoch <= 0L) stop("Invalid epoch in epochs: ", epoch)
-    if ((60L %% epoch) != 0L) {
-      stop("Epoch must divide 60 seconds for Choi perMinuteCts; got epoch=", epoch)
-    }
+    if ((60L %% epoch) != 0L) stop("Epoch must divide 60 seconds for Choi perMinuteCts; got epoch=", epoch)
 
     message(paste0("\n[RUN] device=", device, " epoch=", epoch, "s"))
     epoch_start <- Sys.time()
@@ -295,8 +266,8 @@ accel_summaries <- function(device, data_folder, output_folder,
             output_tz = tz,
             tz_rule = NA_character_,
             grid_action = NA_character_,
-            units = NA_character_,
             autocal = NA_character_,
+            autocal_note = NA_character_,
             counts_bg = "no",
             nonwear = if (isTRUE(apply_nonwear)) "requested" else "off",
             note = conditionMessage(e),
@@ -314,10 +285,11 @@ accel_summaries <- function(device, data_folder, output_folder,
       spec <- attr(df_cal, "ua_time_spec")
       rep_lines <- attr(df_cal, "ua_time_report")
 
+      message("  [AUTOCAL] ", pretty_cal_status(spec))
+
       first_time_chr <- if (nrow(df_cal)) format_time_in_tz(df_cal$time[1], tz_out = tz) else NA_character_
       last_time_chr  <- if (nrow(df_cal)) format_time_in_tz(df_cal$time[nrow(df_cal)], tz_out = tz) else NA_character_
 
-      # detailed per-file section
       if (!is.null(rep_lines) && length(rep_lines)) {
         append_detail("")
         append_detail(paste0("FILE DETAIL (epoch=", epoch, "s): ", file_name))
@@ -330,20 +302,24 @@ accel_summaries <- function(device, data_folder, output_folder,
         append_detail(paste0("  output_tz             : ", spec$output_tz %||% tz))
         append_detail(paste0("  tz_rule               : ", spec$tz_rule %||% NA_character_))
         append_detail(paste0("  grid_action           : ", spec$grid_action %||% NA_character_))
+        append_detail(paste0("  regularized_for_grid  : ", if (isTRUE(spec$regularized_for_uniformity)) "yes" else "no"))
+        append_detail(paste0("  grid_note             : ", spec$grid_regularization_note %||% NA_character_))
+        append_detail(paste0("  cal_input_provenance  : ", spec$calibration_input_provenance %||% NA_character_))
+        append_detail(paste0("  calibration_source    : ", spec$calibration_source %||% NA_character_))
+        append_detail(paste0("  calibration_attempted : ", if (isTRUE(spec$calibration_attempted)) "yes" else "no"))
+        append_detail(paste0("  calibration_success   : ", if (isTRUE(spec$calibration_success)) "yes" else "no"))
+        append_detail(paste0("  calibration_note      : ", spec$calibration_note %||% NA_character_))
         append_detail(paste0("  units_choice          : ", spec$units_choice %||% NA_character_))
-        append_detail(paste0("  autocalibrated        : ", if (isTRUE(spec$autocalibrated)) "yes" else "no"))
         append_detail("  loader notes:")
         append_detail(paste0("    - ", rep_lines))
       }
 
-      # requested metrics
       pieces <- lapply(metrics_run, function(m) {
         tryCatch(run_metric[[m]](df_cal, fp, epoch),
                  error = function(e) NULL)
       })
       names(pieces) <- metrics_run
 
-      # background counts for nonwear
       counts_bg <- NULL
       used_counts_bg <- FALSE
       counts_bg_status <- "no"
@@ -401,8 +377,8 @@ accel_summaries <- function(device, data_folder, output_folder,
           output_tz = spec$output_tz %||% tz,
           tz_rule = spec$tz_rule %||% NA_character_,
           grid_action = spec$grid_action %||% NA_character_,
-          units = spec$units_choice %||% NA_character_,
-          autocal = if (isTRUE(spec$autocalibrated)) "yes" else "no",
+          autocal = if (isTRUE(spec$calibration_success)) "yes" else "no",
+          autocal_note = spec$calibration_note %||% NA_character_,
           counts_bg = counts_bg_status,
           nonwear = if (isTRUE(apply_nonwear)) "requested" else "off",
           note = paste0("Empty metric(s): ", paste(empties, collapse = ", ")),
@@ -436,8 +412,8 @@ accel_summaries <- function(device, data_folder, output_folder,
           output_tz = spec$output_tz %||% tz,
           tz_rule = spec$tz_rule %||% NA_character_,
           grid_action = spec$grid_action %||% NA_character_,
-          units = spec$units_choice %||% NA_character_,
-          autocal = if (isTRUE(spec$autocalibrated)) "yes" else "no",
+          autocal = if (isTRUE(spec$calibration_success)) "yes" else "no",
+          autocal_note = spec$calibration_note %||% NA_character_,
           counts_bg = counts_bg_status,
           nonwear = if (isTRUE(apply_nonwear)) "requested" else "off",
           note = "Inner join produced 0 rows",
@@ -467,8 +443,8 @@ accel_summaries <- function(device, data_folder, output_folder,
             output_tz = spec$output_tz %||% tz,
             tz_rule = spec$tz_rule %||% NA_character_,
             grid_action = spec$grid_action %||% NA_character_,
-            units = spec$units_choice %||% NA_character_,
-            autocal = if (isTRUE(spec$autocalibrated)) "yes" else "no",
+            autocal = if (isTRUE(spec$calibration_success)) "yes" else "no",
+            autocal_note = spec$calibration_note %||% NA_character_,
             counts_bg = counts_bg_status,
             nonwear = "applied",
             note = "All rows removed as nonwear",
@@ -506,8 +482,8 @@ accel_summaries <- function(device, data_folder, output_folder,
         output_tz = spec$output_tz %||% tz,
         tz_rule = spec$tz_rule %||% NA_character_,
         grid_action = spec$grid_action %||% NA_character_,
-        units = spec$units_choice %||% NA_character_,
-        autocal = if (isTRUE(spec$autocalibrated)) "yes" else "no",
+        autocal = if (isTRUE(spec$calibration_success)) "yes" else "no",
+        autocal_note = spec$calibration_note %||% NA_character_,
         counts_bg = counts_bg_status,
         nonwear = nonwear_status,
         note = "",
@@ -535,7 +511,6 @@ accel_summaries <- function(device, data_folder, output_folder,
 
     final_df$time <- force_posix_time(final_df$time)
 
-    # IMPORTANT: write time as character in requested tz, not UTC/Z
     final_df_out <- final_df |>
       dplyr::mutate(
         time = format_time_in_tz(time, tz_out = tz)
@@ -559,18 +534,14 @@ accel_summaries <- function(device, data_folder, output_folder,
     append_detail(paste0("  epoch time (sec)       : ", round(as.numeric(difftime(epoch_end, epoch_start, units = "secs")), 3)))
   }
 
-  # ---------------------------------------------------------------------------
-  # final log writing
-  # ---------------------------------------------------------------------------
   run_end <- Sys.time()
   elapsed_total <- round(as.numeric(difftime(run_end, run_start, units = "secs")), 3)
-
   log_df <- if (length(log_rows)) do.call(rbind, log_rows) else data.frame()
 
   write(
     x = c("",
           "FILE RESULTS TABLE (one row per file per epoch)",
-          "Columns: epoch_s, file, status, seconds, n_samples, first_time, last_time, time_model, source_tz, output_tz, tz_rule, grid_action, units, autocal, counts_bg, nonwear, note"),
+          "Columns: epoch_s, file, status, seconds, n_samples, first_time, last_time, time_model, source_tz, output_tz, tz_rule, grid_action, autocal, autocal_note, counts_bg, nonwear, note"),
     file = log_path,
     append = TRUE
   )
@@ -579,23 +550,23 @@ accel_summaries <- function(device, data_folder, output_folder,
     table_lines <- make_table(
       log_df,
       widths = c(
-        7,
-        28,
-        12,
-        8,
-        10,
-        23,
-        23,
-        16,
-        18,
-        18,
-        12,
-        10,
-        7,
-        8,
-        10,
-        12,
-        28
+        7,   # epoch_s
+        28,  # file
+        12,  # status
+        8,   # seconds
+        10,  # n_samples
+        23,  # first_time
+        23,  # last_time
+        16,  # time_model
+        18,  # source_tz
+        18,  # output_tz
+        18,  # tz_rule
+        12,  # grid_action
+        8,   # autocal
+        28,  # autocal_note
+        10,  # counts_bg
+        12,  # nonwear
+        28   # note
       )
     )
     write(table_lines, file = log_path, append = TRUE)
@@ -645,13 +616,22 @@ accel_summaries <- function(device, data_folder, output_folder,
     "    - compute_in_source_tz         : compute timeline preserved source instant behavior",
     "    - compute_in_assumed_source_tz : naive timestamps interpreted in assumed source timezone",
     "",
-    "  grid_action (NO interpolation)",
-    "    - kept     : original timeline retained",
-    "    - snapped  : timestamps rounded to nearest grid tick; duplicate ticks averaged",
-    "    - rebuilt  : strict time index rebuilt preserving sample order",
+    "  grid_action",
+    "    - kept      : original timeline already matched the requested strict grid",
+    "    - snapped   : timestamps rounded to nearest grid tick; duplicate ticks averaged",
+    "    - reindexed : strict time index rebuilt preserving sample order only; no X/Y/Z interpolation",
     "",
     "  autocal",
-    "    - yes/no indicates whether autocalibration succeeded in the loader",
+    "    - yes/no indicates whether calibration succeeded for that file in the loader context",
+    "",
+    "  autocal_note",
+    "    - ok                               : calibration succeeded",
+    "    - already_calibrated_upstream      : upstream-calibrated file accepted as calibrated",
+    "    - skipped_due_to_severely_irregular_source_grid",
+    "                                      : file was too irregular for safe autocalibration even after regularization",
+    "    - accepted_with_caution:*          : calibration output had minor structural deviation within tolerance",
+    "    - rejected:*                       : calibration output failed structural guardrails",
+    "    - failed:*                         : calibration call errored and UA fell back to uncalibrated data",
     "",
     "  counts_bg",
     "    - yes        : COUNTS computed internally only to obtain Vector.Magnitude for nonwear",
@@ -667,9 +647,11 @@ accel_summaries <- function(device, data_folder, output_folder,
     "",
     "IMPORTANT NOTES",
     "  1) UA does NOT interpolate X/Y/Z.",
-    "  2) Final CSV timestamps are written as character in the requested tz, not UTC Z strings.",
-    "  3) Time display/export now uses explicit with_tz() conversion.",
-    "  4) If source_tz was assumed rather than detected from raw data, verify it matches device/export settings.",
+    "  2) Regularization is applied only when the file is not already on a strict requested grid.",
+    "  3) For mostly near-target files, UA may regularize time by snap/collapse and, if needed, sample-order reindexing.",
+    "  4) Autocalibration is allowed on best-effort regularized grids only when the file passes the near-target threshold.",
+    "  5) Final CSV timestamps are written as character in the requested tz, not UTC Z strings.",
+    "  6) Time display/export uses explicit with_tz() conversion.",
     ""
   )
   write(glossary_lines, file = log_path, append = TRUE)

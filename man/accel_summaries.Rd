@@ -19,34 +19,6 @@ accel_summaries(
   generic_verbose = FALSE
 )
 }
-\arguments{
-\item{device}{"actigraph", "axivity", "geneactiv", or "generic"}
-
-\item{data_folder}{Input folder of native files}
-
-\item{output_folder}{Output folder for CSVs}
-
-\item{epochs}{Numeric vector of epoch lengths in seconds}
-
-\item{sample_rate}{Target Hz for loaders that need a grid}
-
-\item{dynamic_range}{g-range for MIMS (length-2, e.g., c(-8, 8))}
-
-\item{apply_nonwear}{Logical; if TRUE, compute Choi flags (requires Vector.Magnitude).
-For generic runs, if Vector.Magnitude is not present because COUNTS wasn't requested,
-UA will attempt to compute COUNTS internally (only if Hz supports it) to obtain VM.}
-
-\item{metrics}{Character vector of metrics to compute. Any of:
-c("MIMS","AI","COUNTS","ENMO","MAD","ROCAM"). Defaults to all.}
-
-\item{tz}{Timezone for timestamps (passed to loaders and used for final CSV writing)}
-
-\item{generic_autocalibrate}{For device="generic": "auto","true","false"}
-
-\item{generic_units}{For device="generic": "auto","g","m/s2"}
-
-\item{generic_verbose}{For device="generic": extra messages}
-}
 \description{
 \itemize{
 \item loads each file via appropriate loader
