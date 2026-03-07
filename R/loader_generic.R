@@ -8,15 +8,19 @@
 #' - strict about selecting a credible absolute timeline
 #' - transparent about timezone handling via attached attributes
 #' - never interpolate X/Y/Z
-#' - only pass uniform grids downstream
+#' - only pass canonical uniform grids downstream
 #'
 #' Important:
 #' - NO interpolation of X/Y/Z is performed.
-#' - If timestamps are slightly irregular, UA may:
+#' - Pre-autocal regularization may:
 #'   * snap to nearest grid tick and collapse duplicate ticks by mean
 #'   * rebuild a strict time index preserving sample order only
-#' - If the file is too irregular for safe calibration, UA skips autocalibration
-#'   but may still proceed on a strict reindexed grid for downstream metrics.
+#' - Post-autocal canonicalization may:
+#'   * trim trailing rows
+#'   * keep only complete whole-second blocks at the requested sample rate
+#' - Final canonicalization is phase-preserving:
+#'   * UA does NOT force timestamps onto absolute wall-clock within-second slots
+#'   * UA preserves the observed phase of the final regularized stream
 #'
 #' Attached attributes for driver logging:
 #' - attr(out, "ua_time_spec")
@@ -229,6 +233,66 @@ read_and_calibrate_generic <- function(file_path,
     df
   }
 
+  canonicalize_final_blocks <- function(df, hz, compute_tz, tol = NULL) {
+    n0 <- nrow(df)
+    if (!is.finite(n0) || n0 <= 0) {
+      return(list(df = df, n_drop_head = 0L, n_drop_tail = 0L))
+    }
+
+    dt <- 1 / hz
+    if (is.null(tol)) tol <- max(1e-6, 0.05 * dt)
+
+    tt <- as.POSIXct(df$time, tz = compute_tz)
+    x <- as.numeric(tt)
+
+    if (length(x) < 2L || anyNA(x)) {
+      stop("Final canonicalization failed: invalid or too-short time vector.")
+    }
+
+    d <- diff(x)
+    d <- d[is.finite(d)]
+
+    if (!length(d)) {
+      stop("Final canonicalization failed: could not compute time differences.")
+    }
+
+    dup_n <- sum(duplicated(tt))
+    if (dup_n > 0) {
+      stop("Final canonicalization failed: duplicated timestamps remained after regularization.")
+    }
+
+    nonpos_n <- sum(d <= 0)
+    if (nonpos_n > 0) {
+      stop("Final canonicalization failed: nonpositive time differences remained after regularization.")
+    }
+
+    med_dt <- stats::median(d)
+    if (!is.finite(med_dt) || abs(med_dt - dt) > tol) {
+      stop(sprintf(
+        "Final canonicalization failed: median_dt=%.9f did not match expected dt=%.9f within tolerance.",
+        med_dt, dt
+      ))
+    }
+
+    # Phase-preserving: only trim trailing rows to get complete whole-second blocks.
+    n_keep <- floor(n0 / hz) * hz
+    n_drop_tail <- n0 - n_keep
+
+    if (!is.finite(n_keep) || n_keep <= 0) {
+      stop("After final canonicalization, fewer than one complete second of data remained.")
+    }
+
+    out <- df[seq_len(n_keep), , drop = FALSE]
+    out$time <- as.POSIXct(out$time, tz = compute_tz)
+    attr(out$time, "tzone") <- compute_tz
+
+    list(
+      df = out,
+      n_drop_head = 0L,
+      n_drop_tail = as.integer(n_drop_tail)
+    )
+  }
+
   allow_best_effort_regularization <- function(grid_check, target_hz, good_frac_min, hz_tol_frac, max_gap_ticks) {
     if (!is.finite(grid_check$approx_hz) || !is.finite(grid_check$good_frac) ||
         !is.finite(grid_check$max_gap_ticks) || !is.finite(grid_check$missing_frac)) {
@@ -248,6 +312,7 @@ read_and_calibrate_generic <- function(file_path,
 
   detect_data_start_row <- function(path, n_lines = 2000, min_cols = 4, win = 10) {
     if (!(ext %in% c("csv", "gz"))) return(0L)
+
     lines <- readLines(path, n = n_lines, warn = FALSE)
     if (!length(lines)) return(0L)
 
@@ -296,18 +361,35 @@ read_and_calibrate_generic <- function(file_path,
     s <- sub("^[\ufeff\uFEFF]+", "", s, perl = TRUE)
     s <- gsub(",", ".", s, fixed = TRUE)
 
-    s <- ifelse(stringr::str_detect(s, "^\\d{4}-\\d{2}-\\d{2}$"), paste0(s, " 00:00:00.000"), s)
+    s <- ifelse(stringr::str_detect(s, "^\\d{4}-\\d{2}-\\d{2}$"),
+                paste0(s, " 00:00:00.000"), s)
+
     s <- ifelse(stringr::str_detect(s, "^\\d{4}-\\d{2}-\\d{2}\\.\\d{1,6}$"),
-                paste0(stringr::str_sub(s, 1, 10), " 00:00:00", stringr::str_sub(s, 11)), s)
-    s <- ifelse(stringr::str_detect(s, "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$"), paste0(s, ":00.000"), s)
-    s <- sub("^([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2})\\.([0-9]{1,6})$", "\\1:00.\\2", s, perl = TRUE)
-    s <- ifelse(stringr::str_detect(s, "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$"), paste0(s, ".000"), s)
-    s <- ifelse(stringr::str_detect(s, "^\\d{1,2}:\\d{2}$"), paste0(s, ":00.000"), s)
-    s <- sub("^([0-9]{1,2}:[0-9]{2})\\.([0-9]{1,6})$", "\\1:00.\\2", s, perl = TRUE)
-    s <- ifelse(stringr::str_detect(s, "^\\d{1,2}:\\d{2}:\\d{2}$"), paste0(s, ".000"), s)
+                paste0(stringr::str_sub(s, 1, 10), " 00:00:00", stringr::str_sub(s, 11)),
+                s)
+
+    s <- ifelse(stringr::str_detect(s, "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$"),
+                paste0(s, ":00.000"), s)
+
+    s <- sub("^([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2})\\.([0-9]{1,6})$",
+             "\\1:00.\\2", s, perl = TRUE)
+
+    s <- ifelse(stringr::str_detect(s, "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$"),
+                paste0(s, ".000"), s)
+
+    s <- ifelse(stringr::str_detect(s, "^\\d{1,2}:\\d{2}$"),
+                paste0(s, ":00.000"), s)
+
+    s <- sub("^([0-9]{1,2}:[0-9]{2})\\.([0-9]{1,6})$",
+             "\\1:00.\\2", s, perl = TRUE)
+
+    s <- ifelse(stringr::str_detect(s, "^\\d{1,2}:\\d{2}:\\d{2}$"),
+                paste0(s, ".000"), s)
+
     s <- sub("^(.*\\.[0-9]{3})[0-9]+$", "\\1", s, perl = TRUE)
     s <- sub("^(.*\\.[0-9]{2})$", "\\10", s, perl = TRUE)
     s <- sub("^(.*\\.[0-9]{1})$", "\\100", s, perl = TRUE)
+
     s
   }
 
@@ -336,6 +418,7 @@ read_and_calibrate_generic <- function(file_path,
   parse_time_string_local <- function(x_chr, tz_local) {
     s <- canon_ts_chr(x_chr)
     s2 <- sub("(Z|[+-]\\d{2}:?\\d{2})$", "", s, perl = TRUE)
+
     suppressWarnings(lubridate::parse_date_time(
       s2,
       orders = c(
@@ -372,14 +455,20 @@ read_and_calibrate_generic <- function(file_path,
   parse_time_numeric_best_utc <- function(x_num, target_dt = 1 / sample_rate) {
     x0 <- suppressWarnings(as.numeric(x_num))
     if (all(is.na(x0))) {
-      return(list(time_utc = as.POSIXct(rep(NA_real_, length(x_num)), origin = "1970-01-01", tz = "UTC"),
-                  model = NA_character_, score = Inf))
+      return(list(
+        time_utc = as.POSIXct(rep(NA_real_, length(x_num)), origin = "1970-01-01", tz = "UTC"),
+        model = NA_character_,
+        score = Inf
+      ))
     }
 
     x <- x0[is.finite(x0)]
     if (length(x) < 50) {
-      return(list(time_utc = as.POSIXct(rep(NA_real_, length(x_num)), origin = "1970-01-01", tz = "UTC"),
-                  model = NA_character_, score = Inf))
+      return(list(
+        time_utc = as.POSIXct(rep(NA_real_, length(x_num)), origin = "1970-01-01", tz = "UTC"),
+        model = NA_character_,
+        score = Inf
+      ))
     }
 
     cand <- list(
@@ -398,7 +487,9 @@ read_and_calibrate_generic <- function(file_path,
 
     best <- names(scores)[which.min(scores)]
     tt_all <- cand[[best]](x0)
+
     vmsg("[GENERIC] numeric time parse chose: ", best, " (score=", signif(min(scores), 4), ")")
+
     list(time_utc = tt_all, model = best, score = min(scores))
   }
 
@@ -408,6 +499,7 @@ read_and_calibrate_generic <- function(file_path,
 
     n <- nrow(df)
     idx <- unique(round(seq(1, n, length.out = min(200000, n))))
+
     best <- list(score = Inf, anchor = NULL, elapsed = NULL, elapsed_unit = NULL, anchor_model = NULL)
 
     score_elapsed_scale <- function(deltas, unit_scale) {
@@ -442,7 +534,13 @@ read_and_calibrate_generic <- function(file_path,
         for (unm in names(units_try)) {
           sc <- score_elapsed_scale(dv_pos, units_try[[unm]]) + anchor_parse$score
           if (is.finite(sc) && sc < best$score) {
-            best <- list(score = sc, anchor = a, elapsed = e, elapsed_unit = unm, anchor_model = anchor_parse$model)
+            best <- list(
+              score = sc,
+              anchor = a,
+              elapsed = e,
+              elapsed_unit = unm,
+              anchor_model = anchor_parse$model
+            )
           }
         }
       }
@@ -713,7 +811,9 @@ read_and_calibrate_generic <- function(file_path,
     }
 
     best <- pick_time_col(df, seq_along(df))
-    if (is.na(best$idx)) stop("GENERIC loader could not detect a credible time column.\nTip: pass time_col explicitly.")
+    if (is.na(best$idx)) {
+      stop("GENERIC loader could not detect a credible time column.\nTip: pass time_col explicitly.")
+    }
 
     xyz_idx <- pick_xyz_cols(df, exclude_idx = best$idx)
     if (is.null(xyz_idx) || length(xyz_idx) != 3) {
@@ -756,7 +856,9 @@ read_and_calibrate_generic <- function(file_path,
     }
 
     if (ext %in% c("csv", "gz")) {
-      if (!requireNamespace("data.table", quietly = TRUE)) stop("Package 'data.table' is required to read CSV/CSV.GZ.")
+      if (!requireNamespace("data.table", quietly = TRUE)) {
+        stop("Package 'data.table' is required to read CSV/CSV.GZ.")
+      }
 
       delim_use <- delim
       if (is.null(delim_use)) {
@@ -779,8 +881,13 @@ read_and_calibrate_generic <- function(file_path,
       }
 
       df <- as.data.frame(data.table::fread(
-        path, sep = delim_use, header = isTRUE(hdr_use), skip = skip_n,
-        nrows = max_scan, showProgress = verbose, data.table = FALSE
+        path,
+        sep = delim_use,
+        header = isTRUE(hdr_use),
+        skip = skip_n,
+        nrows = max_scan,
+        showProgress = verbose,
+        data.table = FALSE
       ))
 
       attr(df, ".generic_delim") <- delim_use
@@ -789,7 +896,8 @@ read_and_calibrate_generic <- function(file_path,
       df
     } else if (ext == "rds") {
       obj <- readRDS(path)
-      if (inherits(obj, "data.frame") || inherits(obj, "data.table")) as.data.frame(obj) else stop("RDS does not contain a data.frame-like object: ", basename(path))
+      if (inherits(obj, "data.frame") || inherits(obj, "data.table")) as.data.frame(obj)
+      else stop("RDS does not contain a data.frame-like object: ", basename(path))
     } else if (ext %in% c("rda", "rdata")) {
       env <- new.env(parent = emptyenv())
       nm <- load(path, envir = env)
@@ -805,22 +913,30 @@ read_and_calibrate_generic <- function(file_path,
       if (!requireNamespace("arrow", quietly = TRUE)) stop("Package 'arrow' is required to read Parquet/Feather.")
       if (ext == "parquet") as.data.frame(arrow::read_parquet(path)) else as.data.frame(arrow::read_feather(path))
     } else {
-      stop("Unsupported file extension for device='generic': .", ext,
-           "\nSupported: csv, csv.gz, rds, rda/RData, xlsx/xls, parquet, feather")
+      stop(
+        "Unsupported file extension for device='generic': .", ext,
+        "\nSupported: csv, csv.gz, rds, rda/RData, xlsx/xls, parquet, feather"
+      )
     }
   }
 
   reread_full_csv_if_needed <- function(path, scan_df) {
     if (!(ext %in% c("csv", "gz"))) return(scan_df)
-    if (!requireNamespace("data.table", quietly = TRUE)) stop("Package 'data.table' is required to read CSV/CSV.GZ.")
+    if (!requireNamespace("data.table", quietly = TRUE)) {
+      stop("Package 'data.table' is required to read CSV/CSV.GZ.")
+    }
 
     delim_use <- attr(scan_df, ".generic_delim") %||% ","
     hdr_use   <- attr(scan_df, ".generic_header") %||% TRUE
     skip_n    <- attr(scan_df, ".generic_skip") %||% 0L
 
     as.data.frame(data.table::fread(
-      path, sep = delim_use, header = isTRUE(hdr_use), skip = skip_n,
-      showProgress = verbose, data.table = FALSE
+      path,
+      sep = delim_use,
+      header = isTRUE(hdr_use),
+      skip = skip_n,
+      showProgress = verbose,
+      data.table = FALSE
     ))
   }
 
@@ -857,6 +973,7 @@ read_and_calibrate_generic <- function(file_path,
     if (length(vm) < 1000) return("g")
 
     med_vm <- stats::median(vm)
+
     if (med_vm > 2 && med_vm < 6) return("g")
 
     score_g   <- abs(med_vm - 1.0) / 1.0
@@ -1044,7 +1161,10 @@ read_and_calibrate_generic <- function(file_path,
     autocalibrate_setting = autocalibrate,
     autocalibrated = FALSE,
     autocalibrate_note = "not_attempted",
-    grid_regularization_note = NA_character_
+    grid_regularization_note = NA_character_,
+    final_canonicalization_applied = FALSE,
+    final_canonicalization_head_dropped = 0L,
+    final_canonicalization_tail_dropped = 0L
   )
 
   use_epoch_elapsed <- FALSE
@@ -1058,7 +1178,9 @@ read_and_calibrate_generic <- function(file_path,
   if (is.null(time_col)) {
     epoch_elapsed <- detect_epoch_plus_elapsed(df0, target_dt = 1 / sample_rate)
     if (!is.null(epoch_elapsed)) {
-      if (!is.finite(main_score) || epoch_elapsed$score + 5 < main_score) use_epoch_elapsed <- TRUE
+      if (!is.finite(main_score) || epoch_elapsed$score + 5 < main_score) {
+        use_epoch_elapsed <- TRUE
+      }
     }
   }
 
@@ -1078,7 +1200,8 @@ read_and_calibrate_generic <- function(file_path,
     } else {
       e0 <- elapsed_raw[ok][1]
       delta_ticks <- elapsed_raw - e0
-      unit_scale <- switch(epoch_elapsed$elapsed_unit, ns = 1e-9, us = 1e-6, ms = 1e-3, s = 1, 1e-9)
+      unit_scale <- switch(epoch_elapsed$elapsed_unit,
+                           ns = 1e-9, us = 1e-6, ms = 1e-3, s = 1, 1e-9)
       delta_sec <- delta_ticks * unit_scale
       time_utc <- anchor_utc + delta_sec
       time <- as.POSIXct(time_utc, tz = "UTC")
@@ -1111,10 +1234,19 @@ read_and_calibrate_generic <- function(file_path,
     time_spec <- utils::modifyList(time_spec, main_spec)
 
     if (isTRUE(time_spec$source_tz_detected)) {
-      add_report(sprintf("Detected time column '%s' with source timezone information available.", tc))
-      add_report(sprintf("Compute timeline uses source timezone = %s.", time_spec$compute_tz %||% time_spec$source_tz))
+      add_report(sprintf(
+        "Detected time column '%s' with source timezone information available.",
+        tc
+      ))
+      add_report(sprintf(
+        "Compute timeline uses source timezone = %s.",
+        time_spec$compute_tz %||% time_spec$source_tz
+      ))
     } else {
-      add_report(sprintf("Detected time column '%s' with time model '%s'.", tc, time_spec$model))
+      add_report(sprintf(
+        "Detected time column '%s' with time model '%s'.",
+        tc, time_spec$model
+      ))
       add_report(sprintf(
         "Raw timezone was not explicitly detectable. Compute timeline uses assumed source timezone = %s.",
         time_spec$compute_tz %||% tz
@@ -1334,7 +1466,10 @@ read_and_calibrate_generic <- function(file_path,
 
       if (.has_zero_triplets(raw2, eps = zero_triplet_eps)) {
         z <- .drop_zero_triplets(raw2, eps = zero_triplet_eps)
-        add_report(sprintf("Calibration retry: removed %d zero-triplet rows (%.3f%%).", z$n_dropped, 100 * z$n_dropped / nrow(raw2)))
+        add_report(sprintf(
+          "Calibration retry: removed %d zero-triplet rows (%.3f%%).",
+          z$n_dropped, 100 * z$n_dropped / nrow(raw2)
+        ))
 
         cal <- tryCatch(
           agcounts::agcalibrate(raw = z$df, verbose = FALSE, tz = compute_tz),
@@ -1424,11 +1559,34 @@ read_and_calibrate_generic <- function(file_path,
       dplyr::arrange(time)
 
     attr(raw$time, "tzone") <- compute_tz
+
     if (!nrow(raw)) stop("No samples after calibration fallback: ", basename(file_path))
 
     final_cal_summary <- summarize_stream(raw, "post_cal_final", target_hz = sample_rate, tz_use = compute_tz)
     add_report("Calibration final stream used:")
     add_report(paste0("  ", report_stream_summary(final_cal_summary)))
+  }
+
+  canon <- canonicalize_final_blocks(raw, hz = sample_rate, compute_tz = compute_tz)
+  raw <- canon$df
+
+  time_spec$final_canonicalization_applied <- isTRUE((canon$n_drop_head + canon$n_drop_tail) > 0L)
+  time_spec$final_canonicalization_head_dropped <- canon$n_drop_head
+  time_spec$final_canonicalization_tail_dropped <- canon$n_drop_tail
+
+  if ((canon$n_drop_head + canon$n_drop_tail) > 0L) {
+    add_report(sprintf(
+      paste0(
+        "Final canonicalization applied: dropped %d leading row(s) and %d trailing row(s) ",
+        "to retain complete whole-second blocks at %g Hz while preserving the stream's observed phase."
+      ),
+      canon$n_drop_head, canon$n_drop_tail, sample_rate
+    ))
+  } else {
+    add_report(sprintf(
+      "Final canonicalization check: no rows dropped; stream already matched complete whole-second blocks at %g Hz.",
+      sample_rate
+    ))
   }
 
   out <- tibble::tibble(

@@ -1,6 +1,11 @@
 #' @export
 # ============================== METRICS ==============================
 
+.metric_error <- function(metric_name, e) {
+  message("    [", metric_name, " ERROR] ", conditionMessage(e))
+  NULL
+}
+
 calculate_mims <- function(df_cal, file_path, epoch_sec, dynamic_range = c(-8, 8)) {
   tryCatch({
     message("  [MIMS] epoch=", epoch_sec, "s")
@@ -13,9 +18,11 @@ calculate_mims <- function(df_cal, file_path, epoch_sec, dynamic_range = c(-8, 8
         output_mims_per_axis = TRUE
       ) %>%
       dplyr::rename(time = HEADER_TIME_STAMP) %>%
-      dplyr::mutate(time = snap_to_epoch(time, epoch_sec),
-                    ID   = clean_id(file_path))
-  }, error = function(e) NULL)
+      dplyr::mutate(
+        time = snap_to_epoch(time, epoch_sec),
+        ID   = clean_id(file_path)
+      )
+  }, error = function(e) .metric_error("MIMS", e))
 }
 
 #' @export
@@ -31,7 +38,11 @@ calculate_ai <- function(df_cal, file_path, epoch_sec, sample_rate = 100) {
       dplyr::count(sec, name = "n") %>%
       dplyr::filter(n == sample_rate) %>%
       dplyr::pull(sec)
-    if (!length(valid_sec)) return(NULL)
+
+    if (!length(valid_sec)) {
+      message("    [AI ERROR] no complete 1-second blocks at ", sample_rate, " Hz after ingestion")
+      return(NULL)
+    }
 
     df2 <- df %>%
       dplyr::filter(sec %in% valid_sec) %>%
@@ -50,7 +61,7 @@ calculate_ai <- function(df_cal, file_path, epoch_sec, sample_rate = 100) {
         time = snap_to_epoch(time, epoch_sec),
         ID   = clean_id(file_path)
       )
-  }, error = function(e) NULL)
+  }, error = function(e) .metric_error("AI", e))
 }
 
 #' @export
@@ -63,24 +74,27 @@ calculate_activity_counts <- function(df_cal, file_path, epoch_sec, sample_rate 
       tz = "UTC",
       verbose = FALSE
     ) %>%
-      dplyr::mutate(time = snap_to_epoch(time, epoch_sec),
-                    ID   = clean_id(file_path))
-  }, error = function(e) NULL)
+      dplyr::mutate(
+        time = snap_to_epoch(time, epoch_sec),
+        ID   = clean_id(file_path)
+      )
+  }, error = function(e) .metric_error("COUNTS", e))
 }
 
 #' @export
 calculate_enmo <- function(df_cal, file_path, epoch_sec) {
   tryCatch({
     message("  [ENMO] epoch=", epoch_sec, "s")
-    # assumes df_cal has columns: time, X, Y, Z
     df_cal %>%
-      dplyr::mutate(time = snap_to_epoch(time, epoch_sec),
-                    mag  = sqrt(.data$X^2 + .data$Y^2 + .data$Z^2),
-                    ENMO_inst = pmax(.data$mag - 1, 0) * 1000) %>%
+      dplyr::mutate(
+        time = snap_to_epoch(time, epoch_sec),
+        mag  = sqrt(.data$X^2 + .data$Y^2 + .data$Z^2),
+        ENMO_inst = pmax(.data$mag - 1, 0) * 1000
+      ) %>%
       dplyr::group_by(time) %>%
       dplyr::summarise(ENMO = mean(ENMO_inst, na.rm = TRUE), .groups = "drop") %>%
       dplyr::mutate(ID = clean_id(file_path))
-  }, error = function(e) NULL)
+  }, error = function(e) .metric_error("ENMO", e))
 }
 
 #' @export
@@ -88,14 +102,17 @@ calculate_mad <- function(df_cal, file_path, epoch_sec) {
   tryCatch({
     message("  [MAD] epoch=", epoch_sec, "s")
     df_cal %>%
-      dplyr::mutate(time = snap_to_epoch(time, epoch_sec),
-                    mag  = sqrt(.data$X^2 + .data$Y^2 + .data$Z^2)) %>%
+      dplyr::mutate(
+        time = snap_to_epoch(time, epoch_sec),
+        mag  = sqrt(.data$X^2 + .data$Y^2 + .data$Z^2)
+      ) %>%
       dplyr::group_by(time) %>%
-      dplyr::summarise(MAD = mean(abs(.data$mag - mean(.data$mag, na.rm = TRUE)) * 1000,
-                                  na.rm = TRUE),
-                       .groups = "drop") %>%
+      dplyr::summarise(
+        MAD = mean(abs(.data$mag - mean(.data$mag, na.rm = TRUE)) * 1000, na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
       dplyr::mutate(ID = clean_id(file_path))
-  }, error = function(e) NULL)
+  }, error = function(e) .metric_error("MAD", e))
 }
 
 #' @export
@@ -113,17 +130,26 @@ calculate_rocam <- function(df_cal, file_path, epoch_sec) {
         sec = lubridate::floor_date(time, "second")
       ) %>%
       dplyr::filter(!is.na(delta_mag))
-    if (!nrow(df1)) return(NULL)
+
+    if (!nrow(df1)) {
+      message("    [ROCAM ERROR] no valid first differences available after ingestion")
+      return(NULL)
+    }
 
     rocam_1s <- df1 %>%
       dplyr::group_by(sec) %>%
-      dplyr::summarise(ROCAM_1s = stats::median(delta_mag, na.rm = TRUE) * 1000, .groups = "drop")
+      dplyr::summarise(
+        ROCAM_1s = stats::median(delta_mag, na.rm = TRUE) * 1000,
+        .groups = "drop"
+      )
 
     rocam_1s %>%
-      dplyr::transmute(time = snap_to_epoch(sec, epoch_sec),
-                       ROCAM = ROCAM_1s,
-                       ID    = clean_id(file_path)) %>%
+      dplyr::transmute(
+        time = snap_to_epoch(sec, epoch_sec),
+        ROCAM = ROCAM_1s,
+        ID    = clean_id(file_path)
+      ) %>%
       dplyr::group_by(time, ID) %>%
       dplyr::summarise(ROCAM = mean(ROCAM, na.rm = TRUE), .groups = "drop")
-  }, error = function(e) NULL)
+  }, error = function(e) .metric_error("ROCAM", e))
 }
