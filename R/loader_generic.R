@@ -18,9 +18,10 @@
 #' - Post-autocal canonicalization may:
 #'   * trim trailing rows
 #'   * keep only complete whole-second blocks at the requested sample rate
-#' - Final canonicalization is phase-preserving:
-#'   * UA does NOT force timestamps onto absolute wall-clock within-second slots
-#'   * UA preserves the observed phase of the final regularized stream
+#'   * optionally rephase timestamps to exact wall-clock whole-second alignment
+#' - Final canonicalization is signal-preserving:
+#'   * UA does NOT interpolate X/Y/Z
+#'   * UA may apply a constant timestamp shift so the stream starts on a whole-second boundary
 #'
 #' Attached attributes for driver logging:
 #' - attr(out, "ua_time_spec")
@@ -48,11 +49,14 @@ read_and_calibrate_generic <- function(file_path,
                                        regularize_good_frac = 0.95,
                                        regularize_hz_tol_frac = 0.10,
                                        regularize_max_gap_ticks = 2.5,
-                                       cal_rowcount_tol_frac = 0.02) {
+                                       cal_rowcount_tol_frac = 0.02,
+                                       align_to_whole_second = TRUE,
+                                       align_anchor = c("nearest", "floor", "ceiling")) {
 
   autocalibrate <- match.arg(tolower(autocalibrate), choices = c("auto", "true", "false"))
   units <- match.arg(units)
   calibration_guard <- match.arg(calibration_guard)
+  align_anchor <- match.arg(align_anchor)
 
   stopifnot(is.finite(sample_rate), sample_rate > 0)
   stopifnot(is.character(tz), length(tz) == 1, nzchar(tz))
@@ -233,10 +237,44 @@ read_and_calibrate_generic <- function(file_path,
     df
   }
 
-  canonicalize_final_blocks <- function(df, hz, compute_tz, tol = NULL) {
+  rephase_to_whole_second <- function(df, hz, compute_tz, anchor = c("nearest", "floor", "ceiling")) {
+    anchor <- match.arg(anchor)
+    df <- df[order(df$time), , drop = FALSE]
+
+    n <- nrow(df)
+    if (!is.finite(n) || n <= 0) {
+      return(list(df = df, phase_shift_sec = 0))
+    }
+
+    dt <- 1 / hz
+    x <- as.numeric(as.POSIXct(df$time, tz = compute_tz))
+    t1 <- x[1]
+
+    target <- switch(
+      anchor,
+      floor   = floor(t1),
+      ceiling = ceiling(t1),
+      nearest = round(t1)
+    )
+
+    phase_shift_sec <- target - t1
+    x2_start <- t1 + phase_shift_sec
+    x2 <- x2_start + seq(0, by = dt, length.out = n)
+
+    df$time <- as.POSIXct(x2, origin = "1970-01-01", tz = compute_tz)
+    attr(df$time, "tzone") <- compute_tz
+
+    list(df = df, phase_shift_sec = phase_shift_sec)
+  }
+
+  canonicalize_final_blocks <- function(df, hz, compute_tz, tol = NULL,
+                                        align_to_whole_second = TRUE,
+                                        align_anchor = c("nearest", "floor", "ceiling")) {
+    align_anchor <- match.arg(align_anchor)
+
     n0 <- nrow(df)
     if (!is.finite(n0) || n0 <= 0) {
-      return(list(df = df, n_drop_head = 0L, n_drop_tail = 0L))
+      return(list(df = df, n_drop_head = 0L, n_drop_tail = 0L, phase_shift_sec = 0))
     }
 
     dt <- 1 / hz
@@ -274,7 +312,6 @@ read_and_calibrate_generic <- function(file_path,
       ))
     }
 
-    # Phase-preserving: only trim trailing rows to get complete whole-second blocks.
     n_keep <- floor(n0 / hz) * hz
     n_drop_tail <- n0 - n_keep
 
@@ -286,10 +323,19 @@ read_and_calibrate_generic <- function(file_path,
     out$time <- as.POSIXct(out$time, tz = compute_tz)
     attr(out$time, "tzone") <- compute_tz
 
+    phase_shift_sec <- 0
+
+    if (isTRUE(align_to_whole_second)) {
+      rp <- rephase_to_whole_second(out, hz = hz, compute_tz = compute_tz, anchor = align_anchor)
+      out <- rp$df
+      phase_shift_sec <- rp$phase_shift_sec
+    }
+
     list(
       df = out,
       n_drop_head = 0L,
-      n_drop_tail = as.integer(n_drop_tail)
+      n_drop_tail = as.integer(n_drop_tail),
+      phase_shift_sec = phase_shift_sec
     )
   }
 
@@ -1164,7 +1210,9 @@ read_and_calibrate_generic <- function(file_path,
     grid_regularization_note = NA_character_,
     final_canonicalization_applied = FALSE,
     final_canonicalization_head_dropped = 0L,
-    final_canonicalization_tail_dropped = 0L
+    final_canonicalization_tail_dropped = 0L,
+    final_wallclock_rephased = FALSE,
+    final_wallclock_phase_shift_sec = 0
   )
 
   use_epoch_elapsed <- FALSE
@@ -1567,18 +1615,26 @@ read_and_calibrate_generic <- function(file_path,
     add_report(paste0("  ", report_stream_summary(final_cal_summary)))
   }
 
-  canon <- canonicalize_final_blocks(raw, hz = sample_rate, compute_tz = compute_tz)
+  canon <- canonicalize_final_blocks(
+    raw,
+    hz = sample_rate,
+    compute_tz = compute_tz,
+    align_to_whole_second = align_to_whole_second,
+    align_anchor = align_anchor
+  )
   raw <- canon$df
 
   time_spec$final_canonicalization_applied <- isTRUE((canon$n_drop_head + canon$n_drop_tail) > 0L)
   time_spec$final_canonicalization_head_dropped <- canon$n_drop_head
   time_spec$final_canonicalization_tail_dropped <- canon$n_drop_tail
+  time_spec$final_wallclock_rephased <- isTRUE(abs(canon$phase_shift_sec) > 0)
+  time_spec$final_wallclock_phase_shift_sec <- canon$phase_shift_sec
 
   if ((canon$n_drop_head + canon$n_drop_tail) > 0L) {
     add_report(sprintf(
       paste0(
         "Final canonicalization applied: dropped %d leading row(s) and %d trailing row(s) ",
-        "to retain complete whole-second blocks at %g Hz while preserving the stream's observed phase."
+        "to retain complete whole-second blocks at %g Hz."
       ),
       canon$n_drop_head, canon$n_drop_tail, sample_rate
     ))
@@ -1587,6 +1643,22 @@ read_and_calibrate_generic <- function(file_path,
       "Final canonicalization check: no rows dropped; stream already matched complete whole-second blocks at %g Hz.",
       sample_rate
     ))
+  }
+
+  if (isTRUE(align_to_whole_second)) {
+    if (isTRUE(abs(canon$phase_shift_sec) > 0)) {
+      add_report(sprintf(
+        paste0(
+          "Final wall-clock rephasing applied: shifted timestamps by %.6f sec so the stream ",
+          "starts on an exact whole-second boundary. X/Y/Z values and sample order were unchanged."
+        ),
+        canon$phase_shift_sec
+      ))
+    } else {
+      add_report("Final wall-clock rephasing check: no shift needed; stream already started on a whole-second boundary.")
+    }
+  } else {
+    add_report("Final wall-clock rephasing disabled by user; phase-preserving timestamps retained.")
   }
 
   out <- tibble::tibble(
