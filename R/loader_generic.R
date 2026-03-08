@@ -31,7 +31,7 @@
 read_and_calibrate_generic <- function(file_path,
                                        sample_rate = 100,
                                        tz = "UTC",
-                                       autocalibrate = c("auto", "true", "false"),
+                                       autocalibrate = TRUE,
                                        units = c("auto", "g", "m/s2"),
                                        unit_guard_min_n = 5000,
                                        unit_ratio_cutoff = 0.35,
@@ -53,7 +53,10 @@ read_and_calibrate_generic <- function(file_path,
                                        align_to_whole_second = TRUE,
                                        align_anchor = c("nearest", "floor", "ceiling")) {
 
-  autocalibrate <- match.arg(tolower(autocalibrate), choices = c("auto", "true", "false"))
+  if (!is.logical(autocalibrate) || length(autocalibrate) != 1 || is.na(autocalibrate)) {
+    stop("`autocalibrate` must be TRUE or FALSE.")
+  }
+
   units <- match.arg(units)
   calibration_guard <- match.arg(calibration_guard)
   align_anchor <- match.arg(align_anchor)
@@ -1038,12 +1041,6 @@ read_and_calibrate_generic <- function(file_path,
     df
   }
 
-  needs_autocal <- function(df_g, thr = cal_vm_dev_threshold) {
-    vm <- sqrt(df_g$X^2 + df_g$Y^2 + df_g$Z^2)
-    dev <- stats::median(abs(vm - 1), na.rm = TRUE)
-    is.finite(dev) && dev > thr
-  }
-
   summarize_stream <- function(df, label, target_hz, tz_use) {
     out <- list(
       label = label, n = nrow(df), first = NA_character_, last = NA_character_,
@@ -1457,15 +1454,14 @@ read_and_calibrate_generic <- function(file_path,
   time_spec$units_choice <- units_choice
   add_report(sprintf("Units handling: requested=%s, used=%s.", units, units_choice))
 
-  do_cal <- switch(
-    autocalibrate,
-    "true"  = TRUE,
-    "false" = FALSE,
-    "auto"  = needs_autocal(raw)
-  )
-  add_report(sprintf("Autocalibration: setting=%s, decision=%s.", autocalibrate, if (do_cal) "YES" else "NO"))
+  do_cal <- isTRUE(autocalibrate)
 
-  if (autocalibrate == "false") {
+  add_report(sprintf(
+    "Autocalibration requested by user: %s.",
+    if (do_cal) "YES" else "NO"
+  ))
+
+  if (!isTRUE(do_cal)) {
     time_spec$calibration_attempted <- FALSE
     time_spec$calibration_success <- FALSE
     time_spec$calibration_note <- "user_disabled"

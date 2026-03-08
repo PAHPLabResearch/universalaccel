@@ -22,7 +22,7 @@ accel_summaries <- function(device, data_folder, output_folder,
                             apply_nonwear = FALSE,
                             metrics = c("MIMS","AI","COUNTS","ENMO","MAD","ROCAM"),
                             tz = "UTC",
-                            generic_autocalibrate = c("auto","true","false"),
+                            autocalibrate = TRUE,
                             generic_units = c("auto","g","m/s2"),
                             generic_verbose = FALSE) {
 
@@ -30,8 +30,10 @@ accel_summaries <- function(device, data_folder, output_folder,
   if (!requireNamespace("readr", quietly = TRUE)) stop("Package 'readr' is required.")
   if (!requireNamespace("lubridate", quietly = TRUE)) stop("Package 'lubridate' is required.")
 
-  generic_autocalibrate <- match.arg(tolower(generic_autocalibrate),
-                                     choices = c("auto","true","false"))
+  if (!is.logical(autocalibrate) || length(autocalibrate) != 1 || is.na(autocalibrate)) {
+    stop("`autocalibrate` must be TRUE or FALSE.")
+  }
+
   generic_units <- match.arg(generic_units)
 
   stopifnot(is.character(tz), length(tz) == 1, nzchar(tz))
@@ -72,15 +74,97 @@ accel_summaries <- function(device, data_folder, output_folder,
     if (ok) {
       if (identical(src, "upstream_resampled_calibrated")) return("yes (upstream)")
       if (grepl("^applied_with_caution:", note)) return("yes (caution)")
+      if (grepl("^accepted_with_caution:", note)) return("yes (caution)")
       return("yes")
     }
 
     if (grepl("^user_disabled", note)) return("no (user disabled)")
     if (grepl("^skipped_due_to_severely_irregular_source_grid", note)) return("no (irregular grid)")
+    if (grepl("^skipped_degenerate_signal_variation", note)) return("no (degenerate signal)")
     if (grepl("^failed:", note)) return("no (failed)")
+    if (grepl("^failed_all_attempts:", note)) return("no (failed)")
     if (grepl("^agcounts_missing", note)) return("no (agcounts missing)")
     "no"
   }
+
+  prepend_dispatch_note <- function(out, note, dispatch_tag = NULL,
+                                    original_device = NULL, source_loader = NULL) {
+    rpt <- attr(out, "ua_time_report")
+    attr(out, "ua_time_report") <- unique(c(note, rpt))
+
+    spec <- attr(out, "ua_time_spec")
+    if (!is.null(spec)) {
+      spec$dispatch_note <- note
+      if (!is.null(dispatch_tag)) spec$dispatch_tag <- dispatch_tag
+      if (!is.null(original_device)) spec$dispatch_original_device_request <- original_device
+      if (!is.null(source_loader)) spec$dispatch_source_loader <- source_loader
+      attr(out, "ua_time_spec") <- spec
+    }
+    out
+  }
+
+  safe_read_axivity_with_fallback <- function(fp, sample_rate, tz) {
+    out <- tryCatch(
+      read_and_calibrate_axivity(
+        fp,
+        sample_rate = sample_rate,
+        tz = tz,
+        autocalibrate = autocalibrate,
+        verbose = generic_verbose
+      ),
+      error = function(e) {
+        msg <- conditionMessage(e)
+
+        if (grepl("^AXIVITY_NON_OMGUI_CSV:", msg)) {
+          out2 <- read_and_calibrate_generic(
+            fp,
+            sample_rate = sample_rate,
+            tz = tz,
+            autocalibrate = autocalibrate,
+            units = generic_units,
+            verbose = generic_verbose
+          )
+
+          out2 <- prepend_dispatch_note(
+            out2,
+            note = "Driver dispatch: Axivity CSV did not match OMGUI resampled format; routed automatically to generic loader.",
+            dispatch_tag = "axivity_csv_auto_rerouted_to_generic",
+            original_device = "axivity",
+            source_loader = "generic"
+          )
+
+          return(out2)
+        }
+
+        stop(e)
+      }
+    )
+
+    ext0 <- tolower(tools::file_ext(fp))
+    if (identical(ext0, "cwa")) {
+      out <- prepend_dispatch_note(
+        out,
+        note = "Driver dispatch: Axivity .cwa detected; routed to Axivity loader.",
+        dispatch_tag = "axivity_cwa_native",
+        original_device = "axivity",
+        source_loader = "axivity"
+      )
+    } else if (grepl("\\.csv(\\.gz)?$", tolower(basename(fp)))) {
+      spec <- attr(out, "ua_time_spec")
+      if (!is.null(spec) && identical(spec$model %||% "", "axivity_resampled_csv")) {
+        out <- prepend_dispatch_note(
+          out,
+          note = "Driver dispatch: Axivity CSV matched OMGUI resampled format; routed to Axivity loader.",
+          dispatch_tag = "axivity_csv_omgui",
+          original_device = "axivity",
+          source_loader = "axivity"
+        )
+      }
+    }
+
+    out
+  }
+
   run_start <- Sys.time()
   run_id <- format(run_start, "%Y%m%d_%H%M%S")
   log_path <- file.path(output_folder, paste0("UA_summarypreprocessing_Log_", run_id, ".txt"))
@@ -110,15 +194,37 @@ accel_summaries <- function(device, data_folder, output_folder,
   }
 
   loader <- switch(tolower(device),
-                   "actigraph" = read_and_calibrate_actigraph,
-                   "axivity"   = read_and_calibrate_axivity,
-                   "geneactiv" = read_and_calibrate_geneactiv,
+                   "actigraph" = function(fp, sample_rate, tz) {
+                     read_and_calibrate_actigraph(
+                       fp,
+                       sample_rate = sample_rate,
+                       tz = tz,
+                       autocalibrate = autocalibrate,
+                       verbose = generic_verbose
+                     )
+                   },
+                   "axivity"   = function(fp, sample_rate, tz) {
+                     safe_read_axivity_with_fallback(
+                       fp,
+                       sample_rate = sample_rate,
+                       tz = tz
+                     )
+                   },
+                   "geneactiv" = function(fp, sample_rate, tz) {
+                     read_and_calibrate_geneactiv(
+                       fp,
+                       sample_rate = sample_rate,
+                       tz = tz,
+                       autocalibrate = autocalibrate,
+                       verbose = generic_verbose
+                     )
+                   },
                    "generic"   = function(fp, sample_rate, tz) {
                      read_and_calibrate_generic(
                        fp,
                        sample_rate   = sample_rate,
                        tz            = tz,
-                       autocalibrate = generic_autocalibrate,
+                       autocalibrate = autocalibrate,
                        units         = generic_units,
                        verbose       = generic_verbose
                      )
@@ -129,7 +235,7 @@ accel_summaries <- function(device, data_folder, output_folder,
 
   pattern <- switch(tolower(device),
                     "actigraph" = "\\.gt3x$",
-                    "axivity"   = "\\.csv(\\.gz)?$",
+                    "axivity"   = "\\.(cwa|csv|csv\\.gz)$",
                     "geneactiv" = "\\.bin$",
                     "generic"   = "\\.(csv(\\.gz)?|rds|rda|rdata|xlsx|xls|parquet|feather)$"
   )
@@ -220,7 +326,7 @@ accel_summaries <- function(device, data_folder, output_folder,
     paste0("  metrics requested: ", paste(metrics_in, collapse = ", ")),
     paste0("  metrics run: ", paste(metrics_run, collapse = ", ")),
     paste0("  apply_nonwear: ", if (isTRUE(apply_nonwear)) "TRUE" else "FALSE"),
-    paste0("  generic_autocalibrate: ", generic_autocalibrate),
+    paste0("  autocalibrate: ", if (isTRUE(autocalibrate)) "TRUE" else "FALSE"),
     paste0("  generic_units: ", generic_units),
     paste0("  generic_verbose: ", if (isTRUE(generic_verbose)) "TRUE" else "FALSE"),
     "",
@@ -310,6 +416,9 @@ accel_summaries <- function(device, data_folder, output_folder,
         append_detail(paste0("  calibration_success   : ", if (isTRUE(spec$calibration_success)) "yes" else "no"))
         append_detail(paste0("  calibration_note      : ", spec$calibration_note %||% NA_character_))
         append_detail(paste0("  units_choice          : ", spec$units_choice %||% NA_character_))
+        if (!is.null(spec$dispatch_note)) {
+          append_detail(paste0("  dispatch_note         : ", spec$dispatch_note))
+        }
         append_detail("  loader notes:")
         append_detail(paste0("    - ", rep_lines))
       }
@@ -486,7 +595,7 @@ accel_summaries <- function(device, data_folder, output_folder,
         autocal_note = spec$calibration_note %||% NA_character_,
         counts_bg = counts_bg_status,
         nonwear = nonwear_status,
-        note = "",
+        note = spec$dispatch_note %||% "",
         stringsAsFactors = FALSE
       )
 
@@ -629,9 +738,12 @@ accel_summaries <- function(device, data_folder, output_folder,
     "    - already_calibrated_upstream      : upstream-calibrated file accepted as calibrated",
     "    - skipped_due_to_severely_irregular_source_grid",
     "                                      : file was too irregular for safe autocalibration even after regularization",
+    "    - skipped_degenerate_signal_variation",
+    "                                      : file signal variation was too degenerate for safe calibration",
     "    - accepted_with_caution:*          : calibration output had minor structural deviation within tolerance",
     "    - rejected:*                       : calibration output failed structural guardrails",
     "    - failed:*                         : calibration call errored and UA fell back to uncalibrated data",
+    "    - failed_all_attempts:*            : all calibration attempts failed or were rejected",
     "",
     "  counts_bg",
     "    - yes        : COUNTS computed internally only to obtain Vector.Magnitude for nonwear",
@@ -652,6 +764,7 @@ accel_summaries <- function(device, data_folder, output_folder,
     "  4) Autocalibration is allowed on best-effort regularized grids only when the file passes the near-target threshold.",
     "  5) Final CSV timestamps are written as character in the requested tz, not UTC Z strings.",
     "  6) Time display/export uses explicit with_tz() conversion.",
+    "  7) For device='axivity', non-OMGUI CSV files are automatically rerouted to the generic loader.",
     ""
   )
   write(glossary_lines, file = log_path, append = TRUE)

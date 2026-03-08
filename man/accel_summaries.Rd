@@ -14,7 +14,7 @@ accel_summaries(
   apply_nonwear = FALSE,
   metrics = c("MIMS", "AI", "COUNTS", "ENMO", "MAD", "ROCAM"),
   tz = "UTC",
-  generic_autocalibrate = c("auto", "true", "false"),
+  autocalibrate = TRUE,
   generic_units = c("auto", "g", "m/s2"),
   generic_verbose = FALSE
 )
