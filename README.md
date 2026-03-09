@@ -1,6 +1,6 @@
 # universalaccel R workflow
 
-**universalaccel (UA)** is a unified R pipeline for computing harmonized accelerometer preprocessing/summary metrics including: 
+**universalaccel (UA)** is a unified R pipeline for computing harmonized accelerometer raw data preprocessing/summary metrics including: 
 
 1. ENMO (Euclidean Norm Minus One): acceleration magnitude above 1g after removing the static component (autocalibration applied).
 2. MAD (Mean Amplitude Deviation): mean deviation of acceleration magnitude within an epoch.
