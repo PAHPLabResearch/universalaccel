@@ -65,8 +65,8 @@ knitr::opts_chunk$set(
 
 ### UA tested files and order of operations:
 
-- ActiGraph (GT3X), .gt3x raw data is passed through `?agcounts::agcalibrate()` first for autocalibration and metrics are computed.
-- Axivity (AX3), .resampled.CSV is autocalibrated in OmGui, so metrics are directly computed.
+- ActiGraph (GT3X), .gt3x raw data is passed through `?agcounts::GGIR` first for autocalibration and metrics are computed.
+- Axivity (AX3), .resampled.CSV is autocalibrated in OmGui if .cwa files are loaded, agcounts::agcalibrate is used to autocalibrate.
 - GeneActiv, .bin raw data is passed through `?GENEAread::recalibrate()` first and metrics are computed.
 - generic, the workflow accepts files from other devices in formats (csv, csv.gz, rds, rda/RData, xlsx/xls, parquet, feather) provided that they have four columns indicating (time, and triaxial values (X, Y, Z) that are regularly sampled). For autocalibration, generic data uses the agcalibrate() function of the agcounts.  
 - Note that this workflow does not eliminate any file based on the threshold of calibration error.
@@ -75,7 +75,7 @@ knitr::opts_chunk$set(
 
 ### What you provide
 Depending on device type, you provide:
-- Raw device files (ActiGraph `.gt3x`, Axivity `resampled`.csv`, GENEActiv `.bin`, and generic formats)
+- Raw device files (ActiGraph `.gt3x`, Axivity `resampled`.csv` and `.cwa` , GENEActiv `.bin`, and generic `.csv` formats)
 
 ### Key expectations
 - A consistent alignment of metric at the selected epoch length (`epochs`; commonly 5 seconds or 60 seconds).
@@ -247,7 +247,7 @@ out_root <- tempdir()
 ```{r part2_run, echo=TRUE}
 library(universalaccel)
 
-analysis <- ua_analyze_precomputed(
+analysis <- ua_run(
   in_path     = pre_csv, # Specify where your dataset is at
   out_dir     = out_root,# Specify output directory
   location    = "ndw",
