@@ -10,7 +10,8 @@ ua_analyze_precomputed(
   location = "ndw",
   make_weekly = TRUE,
   overwrite = TRUE,
-  fail_fast = FALSE
+  fail_fast = FALSE,
+  outputs = c("output1", "output2", "output3", "output4", "output5", "output6")
 )
 }
 \arguments{
@@ -20,19 +21,22 @@ ua_analyze_precomputed(
 
 \item{location}{Sensor location label used in outputs (e.g., "ndw").}
 
-\item{make_weekly}{If TRUE, writes weekly rollups (Output4).}
+\item{make_weekly}{If TRUE, writes weekly rollups where applicable.}
 
 \item{overwrite}{If TRUE, overwrite existing outputs; otherwise create timestamped variants.}
 
 \item{fail_fast}{If TRUE, stop on first file error. If FALSE, continue and report failures.}
+
+\item{outputs}{Character vector of requested outputs. Allowed:
+"output1","output2","output3","output4","output5","output6".
+Outputs 1–4 are reference-based and currently require epoch 5 or 60.
+Outputs 5–6 (MX) can run for any single epoch.}
 }
 \value{
 Invisibly returns a data.table index (one row per file) with status and output folder.
 }
 \description{
-Runs the Part II workflow on \emph{precomputed} epoch-level files (e.g., outputs
-from \code{accel_summaries()}), producing Outputs 1–5 (bins, zone summaries,
-percentiles, optional weekly rollups, and a plain-language report).
+Runs the Part II workflow on precomputed epoch-level files.
 }
 \details{
 \code{in_path} may be either:
@@ -41,9 +45,9 @@ percentiles, optional weekly rollups, and a plain-language report).
 \item a folder containing one or more supported files.
 }
 
-Folder behavior (important):
+Folder behavior:
 \itemize{
 \item Every file in the folder is processed independently (no combining).
-\item Each file creates its own output folder (handled inside ua_run_end_to_end()).
+\item Each file creates its own output folder.
 }
 }

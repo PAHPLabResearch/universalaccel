@@ -360,7 +360,11 @@ knitr::kable(
 )
 ```
 
-### Output5 — Run report (log)
+### Output5-6 — MX metrics 
+
+**Purpose:** The threshold intensity above which the most active X minutes were accumulated (daily and weekly).
+
+### Output7 — Run report (log)
 
 **Purpose:** a plain-language summary of what ran, what was produced, and how to interpret the columns.
 

@@ -10,7 +10,8 @@ ua_run(
   location = "ndw",
   make_weekly = TRUE,
   overwrite = TRUE,
-  fail_fast = FALSE
+  fail_fast = FALSE,
+  outputs = c("output1", "output2", "output3", "output4", "output5", "output6")
 )
 }
 \arguments{
@@ -20,11 +21,16 @@ ua_run(
 
 \item{location}{Sensor location label used in outputs (e.g., "ndw").}
 
-\item{make_weekly}{If TRUE, writes weekly rollups (Output4).}
+\item{make_weekly}{If TRUE, writes weekly rollups where applicable.}
 
 \item{overwrite}{If TRUE, overwrite existing outputs; otherwise create timestamped variants.}
 
 \item{fail_fast}{If TRUE, stop on first file error. If FALSE, continue and report failures.}
+
+\item{outputs}{Character vector of requested outputs. Allowed:
+"output1","output2","output3","output4","output5","output6".
+Outputs 1–4 are reference-based and currently require epoch 5 or 60.
+Outputs 5–6 (MX) can run for any single epoch.}
 }
 \description{
 \code{ua_run()} is kept as a stable alias for \code{ua_analyze_precomputed()}.

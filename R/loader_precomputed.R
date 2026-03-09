@@ -6,21 +6,22 @@
 #   Robust loader for precomputed epoch-level accelerometry metrics.
 #
 # Canonical output columns:
-#   id, time (POSIXct), epoch_sec (single value), sex (M/F/All), age (int),
+#   id, time (POSIXct), epoch_sec (single value),
+#   optional: sex, age,
 #   plus numeric metric cols (any of: ac,enmo,mad,mims_unit,ai,rocam,...)
 #   plus: day (dense index per-id based on day_tz day boundaries)
 #
-# HARD RULES:
+# RULES:
 #   - epoch_sec must be a SINGLE value (not mixed)
-#   - age is REQUIRED (must have >=1 usable age value after cleaning)
 #   - sex is OPTIONAL (defaults to All if missing/unusable)
+#   - age is OPTIONAL at loader stage
 #   - if apply_valid_filters=TRUE then valid day is NON-NEGOTIABLE:
 #       keep ONLY id×day_date with >= valid_day_hours hours of UNIQUE epoch timestamps
 #       (NO WEEK FILTER)
 #
 # NOTE:
 #   - The loader accepts any single epoch_sec.
-#   - Current ua_run_end_to_end() processing still supports only 5s or 60s.
+#   - Downstream functions decide whether age/sex are required.
 # ============================================================
 
 #' Load precomputed metric time-series for binning / IG / MX (robust messy inputs)
@@ -38,7 +39,7 @@
 load_precomputed_metrics <- function(path,
                                      apply_valid_filters = TRUE,
                                      valid_day_hours = 16,
-                                     valid_week_days = 3,   # ignored
+                                     valid_week_days = 3,
                                      day_tz = "UTC") {
 
   # -----------------------------
@@ -84,20 +85,7 @@ load_precomputed_metrics <- function(path,
         "No usable 'sex' column detected.\n",
         "  • Please add a column named 'sex' (or 'gender') with values: M, F, or All\n",
         "    (also accepted: Male/Female, Man/Woman, 1=Male, 2=Female).\n",
-        "  • Proceeding with sex='All' (pooled references)."
-      ),
-      call. = FALSE
-    )
-  }
-
-  .ua_stop_age_required <- function() {
-    stop(
-      paste0(
-        "Missing required 'age' column.\n",
-        "  • Please add participants' age in years in a column named 'age'.\n",
-        "    Aliases accepted: age_years, ridageyr.\n",
-        "  • Recommended values: 3–80.\n",
-        "  • Analysis cannot proceed without age."
+        "  • Proceeding with sex='All'."
       ),
       call. = FALSE
     )
@@ -115,10 +103,8 @@ load_precomputed_metrics <- function(path,
   }
 
   .parse_time_strict <- function(x) {
-    # Returns POSIXct in UTC.
     if (inherits(x, "POSIXt")) return(as.POSIXct(x, tz = "UTC"))
 
-    # numeric unix time (sec or ms)
     if (is.numeric(x)) {
       xx <- suppressWarnings(as.numeric(x))
       out <- as.POSIXct(rep(NA_real_, length(xx)), origin = "1970-01-01", tz = "UTC")
@@ -355,31 +341,33 @@ load_precomputed_metrics <- function(path,
   DT[, id := as.character(id)]
 
   # ============================================================
-  # sex (optional) + age (required)
+  # sex (optional) + age (required for some downstream outputs only)
   # ============================================================
   if ("sex" %in% names(DT)) {
     DT[, sex := .canon_sex(sex)]
     DT[, sex := as.character(sex)]
-    DT[is.na(sex) | !nzchar(sex), sex := "All"]
   }
 
   if ("age" %in% names(DT)) {
     DT[, age := .clean_age(age)]
   }
 
-  if (!("sex" %in% names(DT)) || all(is.na(DT$sex))) {
+  # keep sex missing if not provided; do NOT force "All" here
+  if (!("sex" %in% names(DT))) {
     .ua_warn_sex()
-    DT[, sex := "All"]
+    DT[, sex := NA_character_]
   } else {
-    DT[is.na(sex) | !nzchar(sex), sex := "All"]
+    DT[, sex := as.character(sex)]
+    DT[!nzchar(sex), sex := NA_character_]
   }
 
-  if (!("age" %in% names(DT)) || all(is.na(DT$age))) {
-    .ua_stop_age_required()
+  # keep age column if absent, but do not stop here
+  if (!("age" %in% names(DT))) {
+    DT[, age := NA_integer_]
   }
 
   # ============================================================
-  # epoch detection (single value required; downstream may restrict)
+  # epoch detection (single value required)
   # ============================================================
   ep_user <- NULL
   if ("epoch_sec" %in% names(DT)) {
@@ -486,6 +474,13 @@ load_precomputed_metrics <- function(path,
     time_min_utc = as.character(min(DT$time, na.rm = TRUE)),
     time_max_utc = as.character(max(DT$time, na.rm = TRUE)),
     n_unique_id  = data.table::uniqueN(DT$id),
+
+    has_age_column = "age" %in% names(DT),
+    has_any_valid_age = any(is.finite(DT$age)),
+    has_complete_age = all(is.finite(DT$age)),
+
+    has_sex_column = "sex" %in% names(DT),
+    has_any_valid_sex = any(!is.na(DT$sex) & nzchar(DT$sex)),
 
     apply_valid_filters  = isTRUE(apply_valid_filters),
     valid_day_hours      = as.numeric(valid_day_hours),

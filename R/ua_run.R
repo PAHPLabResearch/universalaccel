@@ -4,24 +4,26 @@
 
 #' Analyze precomputed epoch-level metrics (Part II)
 #'
-#' Runs the Part II workflow on *precomputed* epoch-level files (e.g., outputs
-#' from `accel_summaries()`), producing Outputs 1–5 (bins, zone summaries,
-#' percentiles, optional weekly rollups, and a plain-language report).
+#' Runs the Part II workflow on precomputed epoch-level files.
 #'
 #' `in_path` may be either:
 #'   - a supported file path (csv/txt/xlsx/xls/rds), or
 #'   - a folder containing one or more supported files.
 #'
-#' Folder behavior (important):
+#' Folder behavior:
 #'   - Every file in the folder is processed independently (no combining).
-#'   - Each file creates its own output folder (handled inside ua_run_end_to_end()).
+#'   - Each file creates its own output folder.
 #'
 #' @param in_path Path to a precomputed file OR a folder containing files.
 #' @param out_dir Output directory where UA outputs will be written.
 #' @param location Sensor location label used in outputs (e.g., "ndw").
-#' @param make_weekly If TRUE, writes weekly rollups (Output4).
+#' @param make_weekly If TRUE, writes weekly rollups where applicable.
 #' @param overwrite If TRUE, overwrite existing outputs; otherwise create timestamped variants.
 #' @param fail_fast If TRUE, stop on first file error. If FALSE, continue and report failures.
+#' @param outputs Character vector of requested outputs. Allowed:
+#'   "output1","output2","output3","output4","output5","output6".
+#'   Outputs 1–4 are reference-based and currently require epoch 5 or 60.
+#'   Outputs 5–6 (MX) can run for any single epoch.
 #'
 #' @return Invisibly returns a data.table index (one row per file) with status and output folder.
 #' @export
@@ -30,7 +32,8 @@ ua_analyze_precomputed <- function(in_path,
                                    location = "ndw",
                                    make_weekly = TRUE,
                                    overwrite = TRUE,
-                                   fail_fast = FALSE) {
+                                   fail_fast = FALSE,
+                                   outputs = c("output1", "output2", "output3", "output4", "output5", "output6")) {
 
   if (!exists("ua_run_end_to_end", mode = "function")) {
     stop(
@@ -44,6 +47,13 @@ ua_analyze_precomputed <- function(in_path,
   }
   library(data.table)
 
+  outputs <- unique(tolower(as.character(outputs)))
+  valid_outputs <- paste0("output", 1:6)
+  bad_outputs <- setdiff(outputs, valid_outputs)
+  if (length(bad_outputs)) {
+    stop("Unknown outputs requested: ", paste(bad_outputs, collapse = ", "), call. = FALSE)
+  }
+
   if (!is.character(in_path) || length(in_path) != 1L || !nzchar(in_path)) {
     stop("in_path must be a single non-empty file or folder path.", call. = FALSE)
   }
@@ -52,18 +62,20 @@ ua_analyze_precomputed <- function(in_path,
   }
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-  # Normalize without requiring it to exist as a file (folders OK)
   in_path_norm <- tryCatch(normalizePath(in_path, winslash = "/", mustWork = FALSE),
                            error = function(e) in_path)
 
-  # helper
-  is_supported <- function(x) grepl("\\.(csv|txt|xlsx|xls|rds)$", x, ignore.case = TRUE)
+  is_supported <- function(x) {
+    ok_ext <- grepl("\\.(csv|xlsx|xls|rds)$", x, ignore.case = TRUE)
+    bad_name <- grepl(
+      "^(UA_processing_log_|UA_processing_summary_|UA_FOLDER_INDEX_|UA_Output[0-9]+_)",
+      basename(x),
+      ignore.case = TRUE
+    )
+    ok_ext & !bad_name
+  }
 
-  # ============================================================
-  # Folder path: process ALL files independently
-  # ============================================================
   if (dir.exists(in_path_norm)) {
-
     cand <- list.files(in_path_norm, full.names = TRUE, recursive = FALSE)
     cand <- cand[is_supported(cand)]
 
@@ -75,9 +87,7 @@ ua_analyze_precomputed <- function(in_path,
       )
     }
 
-    # Sort by filename for deterministic processing (better than mtime)
     cand <- cand[order(tolower(basename(cand)))]
-
     message("[UA] in_path is a folder; processing ", length(cand), " file(s) independently (no combining).")
 
     idx <- data.table(
@@ -94,14 +104,13 @@ ua_analyze_precomputed <- function(in_path,
 
       res <- tryCatch(
         {
-          # IMPORTANT: ua_run_end_to_end() should create its own per-file folder
-          # and (ideally) return run_folder (see note below).
           out <- ua_run_end_to_end(
             in_path     = f,
             out_dir     = out_dir,
             location    = location,
             make_weekly = make_weekly,
-            overwrite   = overwrite
+            overwrite   = overwrite,
+            outputs     = outputs
           )
           list(ok = TRUE, out = out, err = NULL)
         },
@@ -110,9 +119,6 @@ ua_analyze_precomputed <- function(in_path,
 
       if (isTRUE(res$ok)) {
         idx[i, status := "ok"]
-
-        # If ua_run_end_to_end returns run_folder, capture it.
-        # Recommended: have ua_run_end_to_end invisibly return list(run_folder=..., paths=...)
         if (is.list(res$out) && !is.null(res$out$run_folder)) {
           idx[i, run_folder := as.character(res$out$run_folder)]
         }
@@ -125,7 +131,6 @@ ua_analyze_precomputed <- function(in_path,
       }
     }
 
-    # Write a folder index (professional + easy debugging)
     index_path <- file.path(out_dir, sprintf("UA_FOLDER_INDEX_%s.csv", format(Sys.Date(), "%Y-%m-%d")))
     data.table::fwrite(idx, index_path)
     message("[UA] Wrote folder index: ", index_path)
@@ -133,9 +138,6 @@ ua_analyze_precomputed <- function(in_path,
     return(invisible(idx))
   }
 
-  # ============================================================
-  # Single file path: process one file
-  # ============================================================
   if (!file.exists(in_path_norm)) {
     stop("in_path does not exist: ", in_path_norm, call. = FALSE)
   }
@@ -148,10 +150,10 @@ ua_analyze_precomputed <- function(in_path,
     out_dir     = out_dir,
     location    = location,
     make_weekly = make_weekly,
-    overwrite   = overwrite
+    overwrite   = overwrite,
+    outputs     = outputs
   )
 
-  # Return a tiny index row for consistency
   idx1 <- data.table(
     input_file = in_path_norm,
     file_name  = basename(in_path_norm),
@@ -173,7 +175,8 @@ ua_run <- function(in_path,
                    location = "ndw",
                    make_weekly = TRUE,
                    overwrite = TRUE,
-                   fail_fast = FALSE) {
+                   fail_fast = FALSE,
+                   outputs = c("output1", "output2", "output3", "output4", "output5", "output6")) {
 
   ua_analyze_precomputed(
     in_path     = in_path,
@@ -181,6 +184,7 @@ ua_run <- function(in_path,
     location    = location,
     make_weekly = make_weekly,
     overwrite   = overwrite,
-    fail_fast   = fail_fast
+    fail_fast   = fail_fast,
+    outputs     = outputs
   )
 }

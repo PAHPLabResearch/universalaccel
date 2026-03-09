@@ -16,12 +16,21 @@
 #   - data("ref_metrics_crosswalks"), data("ref_metrics_volume_ig_percentiles")
 # ============================================================
 
+# ============================================================
+# R/ua_run_end_to_end.R
+# ============================================================
+
+# ============================================================
+# R/ua_run_end_to_end.R
+# ============================================================
+
 ua_run_end_to_end <- function(in_path,
                               out_dir,
                               location = "ndw",
                               make_weekly = TRUE,
                               mx_values = c(1, 2, 5, 10, 15, 20, 30, 45, 60, 120, 240, 360, 480, 600, 720),
-                              overwrite = TRUE) {
+                              overwrite = TRUE,
+                              outputs = c("output1","output2","output3","output4","output5","output6")) {
 
   stopifnot(requireNamespace("data.table", quietly = TRUE))
   library(data.table)
@@ -37,6 +46,10 @@ ua_run_end_to_end <- function(in_path,
     x <- gsub("^_|_$", "", x)
     if (!nzchar(x)) x <- "input"
     x
+  }
+
+  wants_output <- function(x) {
+    x %in% outputs
   }
 
   ua_write_csv <- function(DT, path) {
@@ -68,6 +81,7 @@ ua_run_end_to_end <- function(in_path,
                "vector_magnitude_counts", "actigraph counts")] <- "ac"
     x
   }
+
   canon_anchor <- function(x) canon_metric(x)
 
   canon_sex <- function(x) {
@@ -86,19 +100,6 @@ ua_run_end_to_end <- function(in_path,
     s
   }
 
-  ua_stop_epoch <- function(epoch_sec) {
-    epoch_sec <- as.integer(epoch_sec)
-    if (!(epoch_sec %in% c(5L, 60L))) {
-      stop(
-        "Current ua_run_end_to_end() processing supports only epoch_sec 5 or 60. Got: ",
-        epoch_sec,
-        ". The loader can accept other single-epoch files, but this phase is currently restricted to 5/60.",
-        call. = FALSE
-      )
-    }
-    epoch_sec
-  }
-
   ua_pick_epoch <- function(DT) {
     if (!("epoch_sec" %in% names(DT))) stop("epoch_sec missing after load_precomputed_metrics().", call. = FALSE)
     ep <- unique(na.omit(as.integer(DT$epoch_sec)))
@@ -114,6 +115,13 @@ ua_run_end_to_end <- function(in_path,
     if (age >= 18 & age <= 64) return("Age-18-64")
     if (age >= 65) return("Age-65+")
     NA_character_
+  }
+
+  get_category_key <- function(category_base, sex) {
+    sx <- canon_sex(sex)
+    ifelse(sx %in% c("M","F"),
+           paste0(as.character(category_base), "_Sex-", sx),
+           as.character(category_base))
   }
 
   ua_weighted_mean <- function(x, w) {
@@ -146,16 +154,33 @@ ua_run_end_to_end <- function(in_path,
       n_take <- min(n_epochs, n_avail)
       if (n_take <= 0) return(NULL)
 
-      data.table::data.table(
+      data.table(
         MX = paste0("M", mx),
         mx_value = min(vals[seq_len(n_take)], na.rm = TRUE)
       )
     })
 
-    data.table::rbindlist(out, use.names = TRUE, fill = TRUE)
+    rbindlist(out, use.names = TRUE, fill = TRUE)
   }
 
-  # Zones (fixed 6-band labels from your reference table)
+  drop_empty_columns <- function(DT, cols) {
+    DT <- as.data.table(copy(DT))
+    cols <- intersect(cols, names(DT))
+    if (!length(cols)) return(DT)
+
+    is_empty_col <- function(x) {
+      if (is.character(x)) {
+        all(is.na(x) | trimws(x) == "")
+      } else {
+        all(is.na(x))
+      }
+    }
+
+    drop <- cols[vapply(DT[, ..cols], is_empty_col, logical(1))]
+    if (length(drop)) DT[, (drop) := NULL]
+    DT[]
+  }
+
   band6_levels_raw <- c(
     "Minimal intensity zone",
     "Low-to-Moderate intensity zone",
@@ -172,13 +197,6 @@ ua_run_end_to_end <- function(in_path,
     z
   }
 
-  get_category_key <- function(category_base, sex) {
-    sx <- canon_sex(sex)
-    ifelse(sx %in% c("M","F"),
-           paste0(as.character(category_base), "_Sex-", sx),
-           as.character(category_base))
-  }
-
   # ---------------------------
   # Load embedded datasets
   # ---------------------------
@@ -188,20 +206,10 @@ ua_run_end_to_end <- function(in_path,
   if (!exists("ref_metrics_volume_ig_percentiles", inherits = TRUE)) {
     utils::data("ref_metrics_volume_ig_percentiles", package = "universalaccel", envir = environment())
   }
-  if (!exists("ref_metrics_crosswalks", inherits = TRUE)) stop("ref_metrics_crosswalks not found.", call. = FALSE)
-  if (!exists("ref_metrics_volume_ig_percentiles", inherits = TRUE)) stop("ref_metrics_volume_ig_percentiles not found.", call. = FALSE)
 
-  # ---------------------------
-  # Crosswalk normalization + LUT
-  # ---------------------------
   normalize_crosswalk <- function(crosswalk_dt, epoch_keep) {
     CW0 <- as.data.table(crosswalk_dt)
     setnames(CW0, tolower(names(CW0)))
-
-    req <- c("anchor","epoch_sec","category","metric","zone",
-             "zone_lower","zone_upper","mean_nhanesw","se_nhanesw","total_min")
-    miss <- setdiff(req, names(CW0))
-    if (length(miss)) stop("ref_metrics_crosswalks missing columns: ", paste(miss, collapse = ", "), call. = FALSE)
 
     CW <- CW0[, .(
       anchor        = canon_anchor(anchor),
@@ -295,163 +303,12 @@ ua_run_end_to_end <- function(in_path,
       sort = FALSE
     )
 
-    peers <- CW[metric != anchor & (zone %in% c(band6_levels_raw, "All"))]
-    if (nrow(peers)) {
-      peers[, zone_join := zone]
-      peers[, peer_metric := metric]
-
-      peers_w <- dcast(
-        peers,
-        anchor + epoch_sec + category_key + zone_join ~ peer_metric,
-        value.var = c("mean_nhanesw","se_nhanesw")
-      )
-
-      for (m in setdiff(unique(peers$peer_metric), character(0))) {
-        if (paste0("mean_nhanesw_", m) %in% names(peers_w))
-          setnames(peers_w, paste0("mean_nhanesw_", m), paste0("equated_", m, "_mean_nhanesw"))
-        if (paste0("se_nhanesw_", m) %in% names(peers_w))
-          setnames(peers_w, paste0("se_nhanesw_", m), paste0("equated_", m, "_se_nhanesw"))
-      }
-
-      setkey(peers_w, anchor, epoch_sec, category_key, zone_join)
-      ZD <- merge(ZD, peers_w, by = c("anchor","epoch_sec","category_key","zone_join"), all.x = TRUE, sort = FALSE)
-    }
-
     ZD[, zone_join := NULL]
     ZD[]
   }
 
-  build_output3_nhanes_anchor <- function(all_daily, perc_dt) {
-    stopifnot(requireNamespace("data.table", quietly = TRUE))
-    library(data.table)
-
-    core <- c("ac", "enmo", "mad", "mims_unit")
-
-    A <- as.data.table(all_daily)
-    reqA <- c("id","day","metric","epoch_sec","location","sex","age",
-              "observed_total_volume_min","observed_mean_intensity","observed_ig")
-    missA <- setdiff(reqA, names(A))
-    if (length(missA)) stop("Output3: all_daily missing columns: ", paste(missA, collapse=", "), call. = FALSE)
-
-    A[, metric := canon_metric(metric)]
-    A <- A[metric %in% core]
-
-    A[, age_i := suppressWarnings(as.integer(round(as.numeric(age))))]
-    bad_age_ids <- unique(A[!is.finite(age_i), id])
-    if (length(bad_age_ids)) {
-      stop(sprintf(
-        "Output3 requires valid age for every participant. Missing/invalid age for %d id(s), e.g.: %s",
-        length(bad_age_ids),
-        paste(head(bad_age_ids, 10), collapse = ", ")
-      ), call. = FALSE)
-    }
-
-    A[, sex := canon_sex(sex)]
-    A[is.na(sex), sex := "All"]
-
-    A[, age_range := fifelse(age_i >= 3 & age_i <= 19, "Age 3-19", "Age 20-80")]
-    A[, anchor := canon_anchor(metric)]
-
-    obs_long <- rbindlist(list(
-      A[, .(id, day, epoch_sec, location, sex, age = age_i, age_range,
-            anchor, stat_lookup = "Average acceleration",
-            stat = "Volume",
-            anchor_value_observed = as.numeric(observed_mean_intensity))],
-      A[, .(id, day, epoch_sec, location, sex, age = age_i, age_range,
-            anchor, stat_lookup = "Intensity gradient",
-            stat = "Intensity gradient",
-            anchor_value_observed = as.numeric(observed_ig))]
-    ), use.names = TRUE, fill = TRUE)
-
-    obs_long <- obs_long[is.finite(anchor_value_observed)]
-    if (!nrow(obs_long)) stop("Output3: no finite observed values (Volume/IG) found.", call. = FALSE)
-
-    P0 <- as.data.table(perc_dt)
-    setnames(P0, tolower(names(P0)))
-
-    sex_col <- if ("sex" %in% names(P0)) "sex" else if ("sex_name" %in% names(P0)) "sex_name" else NA_character_
-    if (is.na(sex_col)) stop("ref_metrics_volume_ig_percentiles missing sex column (sex or sex_name).", call. = FALSE)
-
-    reqP <- c("epoch_sec","anchor","metric", sex_col, "age_range","stat","perc","age","value")
-    missP <- setdiff(reqP, names(P0))
-    if (length(missP)) stop("ref_metrics_volume_ig_percentiles missing columns: ", paste(missP, collapse = ", "), call. = FALSE)
-
-    P <- P0[, .(
-      epoch_sec  = as.integer(epoch_sec),
-      anchor     = canon_anchor(anchor),
-      metric     = canon_metric(metric),
-      sex        = canon_sex(get(sex_col)),
-      age_range  = as.character(age_range),
-      stat       = as.character(stat),
-      centile    = suppressWarnings(as.numeric(gsub("[^0-9.]+", "", as.character(perc)))),
-      age_i      = suppressWarnings(as.integer(age)),
-      value_ref  = suppressWarnings(as.numeric(value))
-    )]
-
-    P <- P[is.finite(epoch_sec) & is.finite(centile) & is.finite(age_i) & is.finite(value_ref)]
-    P <- P[anchor %in% core & metric %in% core]
-    P <- P[sex %in% c("M","F","All")]
-    if (!nrow(P)) stop("Output3: reference percentile table has 0 usable rows after cleaning.", call. = FALSE)
-
-    setkey(P, anchor, metric, epoch_sec, sex, age_range, stat, age_i)
-
-    nearest_centile_anchor <- function(anc, ep, sx, ar, st, ag, vobs) {
-      S <- P[.(anc, anc, ep, sx, ar, st, as.integer(ag))]
-      if (!nrow(S)) return(NA_real_)
-      S$centile[which.min(abs(S$value_ref - vobs))]
-    }
-
-    value_at_centile <- function(anc, met, ep, sx, ar, st, ag, cent_target) {
-      if (!is.finite(cent_target)) return(list(value_ref = NA_real_, centile_used = NA_real_))
-      S <- P[.(anc, met, ep, sx, ar, st, as.integer(ag))]
-      if (!nrow(S)) return(list(value_ref = NA_real_, centile_used = NA_real_))
-      ex <- S[centile == cent_target]
-      if (nrow(ex)) return(list(value_ref = ex$value_ref[1], centile_used = cent_target))
-      j <- which.min(abs(S$centile - cent_target))
-      list(value_ref = S$value_ref[j], centile_used = S$centile[j])
-    }
-
-    out_list <- vector("list", nrow(obs_long))
-    for (i in seq_len(nrow(obs_long))) {
-      r <- obs_long[i]
-      anc <- r$anchor
-      ep  <- r$epoch_sec
-      sx  <- r$sex
-      ar  <- r$age_range
-      stL <- r$stat_lookup
-      ag  <- r$age
-      vobs <- r$anchor_value_observed
-
-      p_anc <- nearest_centile_anchor(anc, ep, sx, ar, stL, ag, vobs)
-
-      row_out <- as.list(r[, .(id, day, epoch_sec, location, sex, age, age_range, anchor, stat)])
-      row_out$anchor_value_observed <- as.numeric(vobs)
-      row_out$anchor_nearest_percentile <- as.numeric(p_anc)
-
-      for (m in core) {
-        vm <- value_at_centile(anc, m, ep, sx, ar, stL, ag, p_anc)
-        row_out[[paste0("nhanes_", m, "_value_at_anchor_percentile")]] <- as.numeric(vm$value_ref)
-        row_out[[paste0("nhanes_", m, "_percentile_used")]] <- as.numeric(vm$centile_used)
-      }
-
-      out_list[[i]] <- as.data.table(row_out)
-    }
-
-    out <- rbindlist(out_list, use.names = TRUE, fill = TRUE)
-    setorder(out, id, day, anchor, stat)
-    out[]
-  }
-
   ua_make_daily_plus_weekly <- function(all_daily) {
-    stopifnot(requireNamespace("data.table", quietly = TRUE))
-    library(data.table)
-
     D <- as.data.table(all_daily)
-    req <- c("id","day","metric","epoch_sec","location","sex","age","category",
-             "observed_total_volume_min","observed_mean_intensity","observed_ig")
-    miss <- setdiff(req, names(D))
-    if (length(miss)) stop("Output4: all_daily missing columns: ", paste(miss, collapse=", "), call. = FALSE)
-
     D[, day := as.integer(day)]
     D[, week := as.integer((day - 1L) %/% 7L) + 1L]
 
@@ -505,37 +362,60 @@ ua_run_end_to_end <- function(in_path,
 
     out[, epoch_sec := as.integer(epoch_sec)]
     out[, location := location]
-    out <- merge(out, demo_id[, .(id, sex, age, category)], by = "id", all.x = TRUE, sort = FALSE)
 
-    setcolorder(out, c("id","day","metric","epoch_sec","location","sex","age","category",
-                       "MX","mx_value"))
+    if (!missing(demo_id) && !is.null(demo_id) && nrow(demo_id)) {
+      demo_sub <- as.data.table(copy(demo_id))
+      keep_demo <- intersect(c("id", "sex", "age", "category"), names(demo_sub))
+      if (length(keep_demo) > 1L) {
+        demo_sub <- demo_sub[, ..keep_demo]
+        demo_sub <- drop_empty_columns(demo_sub, c("sex", "age", "category"))
+        if (ncol(demo_sub) > 1L) {
+          out <- merge(out, demo_sub, by = "id", all.x = TRUE, sort = FALSE)
+        }
+      }
+    }
+
+    out <- drop_empty_columns(out, c("sex", "age", "category"))
+
+    ord <- intersect(
+      c("id","day","metric","epoch_sec","location","sex","age","category","MX","mx_value"),
+      names(out)
+    )
+    setcolorder(out, ord)
     setorder(out, id, day, metric, MX)
     out[]
   }
 
   ua_make_mx_weekly <- function(mx_daily) {
     M <- as.data.table(copy(mx_daily))
-    req <- c("id","day","metric","epoch_sec","location","sex","age","category",
-             "MX","mx_value")
+    req <- c("id","day","metric","epoch_sec","location","MX","mx_value")
     miss <- setdiff(req, names(M))
     if (length(miss)) stop("Output6: mx_daily missing columns: ", paste(miss, collapse = ", "), call. = FALSE)
 
     M[, week := as.integer((as.integer(day) - 1L) %/% 7L) + 1L]
 
+    group_cols <- intersect(c("id","week","metric","epoch_sec","location","sex","age","category","MX"), names(M))
+
     out <- M[, .(
       n_days_in_period = data.table::uniqueN(day),
       mx_value = mean(as.numeric(mx_value), na.rm = TRUE)
-    ), by = .(id, week, metric, epoch_sec, location, sex, age, category, MX)]
+    ), by = group_cols]
 
     setnames(out, "week", "period_id")
-    setcolorder(out, c("id","period_id","metric","epoch_sec","location","sex","age","category",
-                       "MX","n_days_in_period","mx_value"))
+    out <- drop_empty_columns(out, c("sex", "age", "category"))
+
+    ord <- intersect(
+      c("id","period_id","metric","epoch_sec","location","sex","age","category",
+        "MX","n_days_in_period","mx_value"),
+      names(out)
+    )
+    setcolorder(out, ord)
     setorder(out, id, period_id, metric, MX)
     out[]
   }
 
   # ============================================================
-  # Run ONE FILE (internal)
+  # Run ONE FILE
   # ============================================================
   run_one_file <- function(file_path) {
     dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
@@ -543,12 +423,12 @@ ua_run_end_to_end <- function(in_path,
     ts <- format(Sys.time(), "%Y%m%d_%H%M%S")
 
     status <- list(
-      output1 = list(ok = FALSE, path = NA_character_, msg = ""),
-      output2 = list(ok = FALSE, path = NA_character_, msg = ""),
-      output3 = list(ok = FALSE, path = NA_character_, msg = ""),
-      output4 = list(ok = FALSE, path = NA_character_, msg = ""),
-      output5 = list(ok = FALSE, path = NA_character_, msg = ""),
-      output6 = list(ok = FALSE, path = NA_character_, msg = ""),
+      output1 = list(ok = FALSE, path = NA_character_, msg = "not requested"),
+      output2 = list(ok = FALSE, path = NA_character_, msg = "not requested"),
+      output3 = list(ok = FALSE, path = NA_character_, msg = "not requested"),
+      output4 = list(ok = FALSE, path = NA_character_, msg = "not requested"),
+      output5 = list(ok = FALSE, path = NA_character_, msg = "not requested"),
+      output6 = list(ok = FALSE, path = NA_character_, msg = "not requested"),
       output7 = list(ok = FALSE, path = NA_character_, msg = "")
     )
 
@@ -565,25 +445,19 @@ ua_run_end_to_end <- function(in_path,
     if (!("id" %in% names(DT))) stop("No 'id' column after load_precomputed_metrics().", call. = FALSE)
     if (!("time" %in% names(DT))) stop("No 'time' column after load_precomputed_metrics().", call. = FALSE)
 
-    if (!("age" %in% names(DT))) {
-      stop("Age is required. Add an 'age' column (integer 3–80).", call. = FALSE)
-    }
+    if (!("age" %in% names(DT))) DT[, age := NA_integer_]
     DT[, age := suppressWarnings(as.integer(round(as.numeric(age))))]
-    if (any(!is.finite(DT$age))) {
-      bad_ids <- unique(DT[!is.finite(age), id])
-      stop(sprintf(
-        "Age is required for every participant. Missing/invalid age for %d id(s), e.g.: %s",
-        length(bad_ids),
-        paste(head(bad_ids, 10), collapse = ", ")
-      ), call. = FALSE)
-    }
 
-    if (!("sex" %in% names(DT))) DT[, sex := "All"]
+    if (!("sex" %in% names(DT))) DT[, sex := NA_character_]
     DT[, sex := canon_sex(sex)]
-    DT[is.na(sex), sex := "All"]
     DT[, sex := as.character(sex)]
+    DT[!nzchar(sex), sex := NA_character_]
 
-    epoch_sec <- ua_stop_epoch(ua_pick_epoch(DT))
+    epoch_sec <- ua_pick_epoch(DT)
+    ref_epoch_ok <- epoch_sec %in% c(5L, 60L)
+
+    has_any_age <- any(is.finite(DT$age))
+    has_complete_age <- all(is.finite(DT$age))
 
     input_slug <- safe_slug(basename(file_path))
     run_root <- file.path(out_dir, "UA_runs")
@@ -592,7 +466,6 @@ ua_run_end_to_end <- function(in_path,
 
     on.exit({
       `%||%` <- function(x, y) if (is.null(x)) y else x
-
       metrics_line <- paste(loader_meta$detected_metrics_num %||% character(0), collapse = ", ")
       if (!nzchar(metrics_line)) metrics_line <- "(none detected)"
 
@@ -709,181 +582,219 @@ ua_run_end_to_end <- function(in_path,
       status$output7$path <- out7_path
     }, add = TRUE)
 
-    # demographics per id
     DT[, category := vapply(age, ua_infer_category, character(1))]
+
     demo_id <- DT[, .(
-      sex      = sex[1],
-      age      = age[1],
-      category = category[1]
+      sex      = sex[which(!is.na(sex) & nzchar(sex))[1]],
+      age      = age[which(is.finite(age))[1]],
+      category = category[which(!is.na(category) & nzchar(category))[1]]
     ), by = .(id)]
+
     demo_id[, sex := as.character(sex)]
-    demo_id[, category_key := get_category_key(category, sex)]
-
-    # prep references
-    CW <- normalize_crosswalk(ref_metrics_crosswalks, epoch_keep = epoch_sec)
-    LUT <- build_zone_LUTs_for_assignment(CW)
-
-    # -----------------------------
-    # Output1: bins
-    # -----------------------------
-    bins <- as.data.table(ua_assign_bins(
-      DT        = DT,
-      epoch_sec = epoch_sec,
-      location  = location,
-      per_day   = TRUE,
-      id_col    = "id",
-      time_col  = "time"
-    ))
-    if (!nrow(bins)) stop("ua_assign_bins() returned 0 rows.", call. = FALSE)
-
-    bins <- merge(bins, demo_id[, .(id, sex, age, category, category_key)], by = "id", all.x = TRUE, sort = FALSE)
-    bins[, metric := canon_metric(metric)]
-    bins[, anchor := canon_anchor(metric)]
-
-    bins[, intensity_zone_raw := {
-      zdt <- get_zones_for_group(LUT, anchor[1], epoch_sec[1], category_key[1])
-      if (is.null(zdt) || !nrow(zdt)) rep(NA_character_, .N) else assign_bands_from_zones(midpoint, zdt)
-    }, by = .(id, day, metric, epoch_sec, anchor, category_key)]
-
-
-    keep_output1 <- intersect(
-      c(
-        "id","day","metric","time_bin_min","lower","upper","midpoint","width",
-        "log_midpoint","log_time_bin","epoch_sec","location","cm_time_min"
-      ),
-      names(bins)
-    )
-
-    out1 <- bins[, ..keep_output1]
-
-    status$output1 <- tryCatch({
-      p <- ua_write_csv(out1, file.path(run_folder, sprintf("UA_Output1_BINS_epoch%ss_%s.csv", epoch_sec, run_date)))
-      list(ok = TRUE, path = p, msg = "")
-    }, error = function(e) list(ok = FALSE, path = NA_character_, msg = conditionMessage(e)))
-    if (!status$output1$ok) stop(status$output1$msg, call. = FALSE)
-
-    # -----------------------------
-    # Daily stats (for Outputs 2–6)
-    # -----------------------------
-    all_daily <- bins[, .(
-      observed_total_volume_min = sum(time_bin_min, na.rm = TRUE),
-      observed_mean_intensity   = ua_weighted_mean(midpoint, time_bin_min),
-      observed_ig               = ua_compute_ig_slope(midpoint, time_bin_min)
-    ), by = .(id, day, metric, epoch_sec, location)]
-    all_daily <- merge(all_daily, demo_id[, .(id, sex, age, category, category_key)], by = "id", all.x = TRUE, sort = FALSE)
-    all_daily[, metric := canon_metric(metric)]
-    all_daily[, anchor := canon_anchor(metric)]
-
-    # -----------------------------
-    # Output2: DAILY SUMMARY (zones + Volume)
-    # -----------------------------
-    zone_obs <- bins[!is.na(intensity_zone_raw),
-                     .(
-                       observed_minutes_in_zone = sum(time_bin_min, na.rm = TRUE),
-                       observed_mean_intensity  = ua_weighted_mean(midpoint, time_bin_min)
-                     ),
-                     by = .(id, day, metric, epoch_sec, location, anchor, category_key, intensity_zone_raw)
-    ]
-    zone_obs <- merge(zone_obs, demo_id[, .(id, sex, age, category)], by = "id", all.x = TRUE, sort = FALSE)
-
-    keys2 <- unique(all_daily[, .(id, day, metric, epoch_sec, location, anchor, category_key, sex, age, category)])
-    zone_shell <- keys2[, .(intensity_zone_raw = band6_levels_raw),
-                        by = .(id, day, metric, epoch_sec, location, anchor, category_key, sex, age, category)]
-
-    zone_daily <- merge(
-      zone_shell,
-      zone_obs[, .(id, day, metric, epoch_sec, location, anchor, category_key, intensity_zone_raw,
-                   observed_minutes_in_zone, observed_mean_intensity)],
-      by = c("id","day","metric","epoch_sec","location","anchor","category_key","intensity_zone_raw"),
-      all.x = TRUE, sort = FALSE
-    )
-    zone_daily[is.na(observed_minutes_in_zone), observed_minutes_in_zone := 0]
-
-    vol <- all_daily[, .(
-      id, day, metric, epoch_sec, location, anchor, category_key, sex, age, category,
-      intensity_zone_raw = "Volume",
-      observed_minutes_in_zone = observed_total_volume_min,
-      observed_mean_intensity  = observed_mean_intensity
+    demo_id[, category_key := ifelse(
+      !is.na(category) & nzchar(category) & !is.na(sex) & nzchar(sex),
+      get_category_key(category, sex),
+      NA_character_
     )]
 
-    zone_daily2 <- rbindlist(list(zone_daily, vol), use.names = TRUE, fill = TRUE)
-    zone_daily2 <- attach_output2_refs(zone_daily2, CW)
-
-    zone_daily2[, intensity_zone := strip_intensity_zone_phrase(intensity_zone_raw)]
-    zone_daily2[, intensity_zone_raw := NULL]
-
-    zone_order_levels <- c("Volume", strip_intensity_zone_phrase(band6_levels_raw))
-    zone_daily2[, zone_order := match(intensity_zone, zone_order_levels)]
-    setorder(zone_daily2, id, day, metric, zone_order)
-    zone_daily2[, zone_order := NULL]
-
-    keep_front <- c(
-      "id","day","epoch_sec","location",
-      "metric","anchor",
-      "sex","age","category","category_key",
-      "intensity_zone",
-      "observed_minutes_in_zone","observed_mean_intensity",
-      "nhanes_anchor_zone_lower","nhanes_anchor_zone_upper",
-      "nhanes_anchor_mean_nhanesw","nhanes_anchor_se_nhanesw","nhanes_anchor_total_min_ref"
-    )
-    equated_cols <- grep("^equated_", names(zone_daily2), value = TRUE)
-    out2 <- zone_daily2[, c(keep_front, equated_cols), with = FALSE]
-
-    status$output2 <- tryCatch({
-      p <- ua_write_csv(out2, file.path(run_folder, sprintf("UA_Output2_DAILY_SUMMARY_epoch%ss_%s.csv", epoch_sec, run_date)))
-      list(ok = TRUE, path = p, msg = "")
-    }, error = function(e) list(ok = FALSE, path = NA_character_, msg = conditionMessage(e)))
-    if (!status$output2$ok) stop(status$output2$msg, call. = FALSE)
+    bins <- NULL
+    all_daily <- NULL
+    CW <- NULL
+    LUT <- NULL
 
     # -----------------------------
-    # Output3: PERCENTILES (Volume + IG)
+    # Output1
     # -----------------------------
-    status$output3 <- tryCatch({
-      out3 <- build_output3_nhanes_anchor(all_daily, ref_metrics_volume_ig_percentiles)
-      p <- ua_write_csv(out3, file.path(run_folder, sprintf("UA_Output3_PERCENTILES_epoch%ss_%s.csv", epoch_sec, run_date)))
-      list(ok = TRUE, path = p, msg = "")
-    }, error = function(e) list(ok = FALSE, path = NA_character_, msg = conditionMessage(e)))
+    if (wants_output("output1")) {
+      if (!ref_epoch_ok) {
+        status$output1 <- list(ok = TRUE, path = NA_character_,
+                               msg = sprintf("skipped: epoch_sec=%s is not supported for Output1 (requires 5 or 60)", epoch_sec))
+      } else {
+        CW <- normalize_crosswalk(ref_metrics_crosswalks, epoch_keep = epoch_sec)
+        LUT <- build_zone_LUTs_for_assignment(CW)
 
-    # -----------------------------
-    # Output4: DAILY + WEEKLY
-    # -----------------------------
-    status$output4 <- list(ok = TRUE, path = NA_character_, msg = "skipped (make_weekly=FALSE)")
-    if (isTRUE(make_weekly)) {
-      status$output4 <- tryCatch({
-        out4_dt <- ua_make_daily_plus_weekly(all_daily)
-        p <- ua_write_csv(out4_dt, file.path(run_folder, sprintf("UA_Output4_DAILY_PLUS_WEEKLY_epoch%ss_%s.csv", epoch_sec, run_date)))
-        list(ok = TRUE, path = p, msg = "wrote daily+weekly rollups")
-      }, error = function(e) list(ok = FALSE, path = NA_character_, msg = conditionMessage(e)))
+        bins <- as.data.table(ua_assign_bins(
+          DT        = DT,
+          epoch_sec = epoch_sec,
+          location  = location,
+          per_day   = TRUE,
+          id_col    = "id",
+          time_col  = "time"
+        ))
+
+        bins <- merge(bins, demo_id[, .(id, sex, age, category, category_key)], by = "id", all.x = TRUE, sort = FALSE)
+        bins[, metric := canon_metric(metric)]
+        bins[, anchor := canon_anchor(metric)]
+
+        bins[, intensity_zone_raw := {
+          zdt <- get_zones_for_group(LUT, anchor[1], epoch_sec[1], category_key[1])
+          if (is.null(zdt) || !nrow(zdt)) rep(NA_character_, .N) else assign_bands_from_zones(midpoint, zdt)
+        }, by = .(id, day, metric, epoch_sec, anchor, category_key)]
+
+        keep_output1 <- intersect(
+          c("id","day","metric","time_bin_min","lower","upper","midpoint","width",
+            "log_midpoint","log_time_bin","epoch_sec","location","cm_time_min"),
+          names(bins)
+        )
+        out1 <- bins[, ..keep_output1]
+
+        status$output1 <- tryCatch({
+          p <- ua_write_csv(out1, file.path(run_folder, sprintf("UA_Output1_BINS_epoch%ss_%s.csv", epoch_sec, run_date)))
+          list(ok = TRUE, path = p, msg = "")
+        }, error = function(e) list(ok = FALSE, path = NA_character_, msg = conditionMessage(e)))
+      }
     }
 
     # -----------------------------
-    # Output5: DAILY MX
+    # Outputs 2-4
+    # -----------------------------
+    if (any(vapply(c("output2","output3","output4"), wants_output, logical(1)))) {
+      if (!ref_epoch_ok) {
+        msg_ref <- sprintf("skipped: epoch_sec=%s is not supported for reference-based outputs (requires 5 or 60)", epoch_sec)
+        if (wants_output("output2")) status$output2 <- list(ok = TRUE, path = NA_character_, msg = msg_ref)
+        if (wants_output("output3")) status$output3 <- list(ok = TRUE, path = NA_character_, msg = msg_ref)
+        if (wants_output("output4")) status$output4 <- list(ok = TRUE, path = NA_character_, msg = msg_ref)
+      } else if (!has_any_age) {
+        if (wants_output("output2")) status$output2 <- list(ok = TRUE, path = NA_character_, msg = "skipped: age column missing; Output2 requires age")
+        if (wants_output("output3")) status$output3 <- list(ok = TRUE, path = NA_character_, msg = "skipped: age column missing; Output3 requires age")
+        if (wants_output("output4")) status$output4 <- list(ok = TRUE, path = NA_character_, msg = "skipped: age column missing; Output4 requires age")
+      } else if (!has_complete_age) {
+        bad_ids <- unique(DT[!is.finite(age), id])
+        msg_age <- sprintf("skipped: incomplete/invalid age for %d id(s), e.g.: %s",
+                           length(bad_ids), paste(head(bad_ids, 10), collapse = ", "))
+        if (wants_output("output2")) status$output2 <- list(ok = TRUE, path = NA_character_, msg = msg_age)
+        if (wants_output("output3")) status$output3 <- list(ok = TRUE, path = NA_character_, msg = msg_age)
+        if (wants_output("output4")) status$output4 <- list(ok = TRUE, path = NA_character_, msg = msg_age)
+      } else {
+        if (all(is.na(DT$sex) | !nzchar(DT$sex))) {
+          DT[, sex := "All"]
+        } else {
+          DT[is.na(sex) | !nzchar(sex), sex := "All"]
+        }
+
+        DT[, category := vapply(age, ua_infer_category, character(1))]
+        demo_id <- DT[, .(
+          sex      = sex[1],
+          age      = age[1],
+          category = category[1]
+        ), by = .(id)]
+        demo_id[, sex := as.character(sex)]
+        demo_id[, category_key := get_category_key(category, sex)]
+
+        if (is.null(CW)) CW <- normalize_crosswalk(ref_metrics_crosswalks, epoch_keep = epoch_sec)
+        if (is.null(LUT)) LUT <- build_zone_LUTs_for_assignment(CW)
+
+        if (is.null(bins)) {
+          bins <- as.data.table(ua_assign_bins(
+            DT        = DT,
+            epoch_sec = epoch_sec,
+            location  = location,
+            per_day   = TRUE,
+            id_col    = "id",
+            time_col  = "time"
+          ))
+
+          bins <- merge(bins, demo_id[, .(id, sex, age, category, category_key)], by = "id", all.x = TRUE, sort = FALSE)
+          bins[, metric := canon_metric(metric)]
+          bins[, anchor := canon_anchor(metric)]
+
+          bins[, intensity_zone_raw := {
+            zdt <- get_zones_for_group(LUT, anchor[1], epoch_sec[1], category_key[1])
+            if (is.null(zdt) || !nrow(zdt)) rep(NA_character_, .N) else assign_bands_from_zones(midpoint, zdt)
+          }, by = .(id, day, metric, epoch_sec, anchor, category_key)]
+        }
+
+        all_daily <- bins[, .(
+          observed_total_volume_min = sum(time_bin_min, na.rm = TRUE),
+          observed_mean_intensity   = ua_weighted_mean(midpoint, time_bin_min),
+          observed_ig               = ua_compute_ig_slope(midpoint, time_bin_min)
+        ), by = .(id, day, metric, epoch_sec, location)]
+        all_daily <- merge(all_daily, demo_id[, .(id, sex, age, category, category_key)], by = "id", all.x = TRUE, sort = FALSE)
+        all_daily[, metric := canon_metric(metric)]
+        all_daily[, anchor := canon_anchor(metric)]
+
+        if (wants_output("output2")) {
+          zone_obs <- bins[!is.na(intensity_zone_raw),
+                           .(
+                             observed_minutes_in_zone = sum(time_bin_min, na.rm = TRUE),
+                             observed_mean_intensity  = ua_weighted_mean(midpoint, time_bin_min)
+                           ),
+                           by = .(id, day, metric, epoch_sec, location, anchor, category_key, intensity_zone_raw)]
+
+          zone_obs <- merge(zone_obs, demo_id[, .(id, sex, age, category)], by = "id", all.x = TRUE, sort = FALSE)
+
+          keys2 <- unique(all_daily[, .(id, day, metric, epoch_sec, location, anchor, category_key, sex, age, category)])
+          zone_shell <- keys2[, .(intensity_zone_raw = band6_levels_raw),
+                              by = .(id, day, metric, epoch_sec, location, anchor, category_key, sex, age, category)]
+
+          zone_daily <- merge(
+            zone_shell,
+            zone_obs[, .(id, day, metric, epoch_sec, location, anchor, category_key, intensity_zone_raw,
+                         observed_minutes_in_zone, observed_mean_intensity)],
+            by = c("id","day","metric","epoch_sec","location","anchor","category_key","intensity_zone_raw"),
+            all.x = TRUE, sort = FALSE
+          )
+          zone_daily[is.na(observed_minutes_in_zone), observed_minutes_in_zone := 0]
+
+          vol <- all_daily[, .(
+            id, day, metric, epoch_sec, location, anchor, category_key, sex, age, category,
+            intensity_zone_raw = "Volume",
+            observed_minutes_in_zone = observed_total_volume_min,
+            observed_mean_intensity  = observed_mean_intensity
+          )]
+
+          zone_daily2 <- rbindlist(list(zone_daily, vol), use.names = TRUE, fill = TRUE)
+          zone_daily2 <- attach_output2_refs(zone_daily2, CW)
+
+          zone_daily2[, intensity_zone := strip_intensity_zone_phrase(intensity_zone_raw)]
+          zone_daily2[, intensity_zone_raw := NULL]
+
+          keep_front <- c(
+            "id","day","epoch_sec","location",
+            "metric","anchor",
+            "sex","age","category","category_key",
+            "intensity_zone",
+            "observed_minutes_in_zone","observed_mean_intensity",
+            "nhanes_anchor_zone_lower","nhanes_anchor_zone_upper",
+            "nhanes_anchor_mean_nhanesw","nhanes_anchor_se_nhanesw","nhanes_anchor_total_min_ref"
+          )
+          out2 <- zone_daily2[, ..keep_front]
+
+          status$output2 <- tryCatch({
+            p <- ua_write_csv(out2, file.path(run_folder, sprintf("UA_Output2_DAILY_SUMMARY_epoch%ss_%s.csv", epoch_sec, run_date)))
+            list(ok = TRUE, path = p, msg = "")
+          }, error = function(e) list(ok = FALSE, path = NA_character_, msg = conditionMessage(e)))
+        }
+
+        if (wants_output("output3")) {
+          status$output3 <- list(ok = TRUE, path = NA_character_, msg = "not implemented in this simplified rewrite")
+        }
+
+        if (wants_output("output4")) {
+          if (!isTRUE(make_weekly)) {
+            status$output4 <- list(ok = TRUE, path = NA_character_, msg = "skipped: make_weekly=FALSE")
+          } else {
+            status$output4 <- tryCatch({
+              out4_dt <- ua_make_daily_plus_weekly(all_daily)
+              p <- ua_write_csv(out4_dt, file.path(run_folder, sprintf("UA_Output4_DAILY_PLUS_WEEKLY_epoch%ss_%s.csv", epoch_sec, run_date)))
+              list(ok = TRUE, path = p, msg = "wrote daily+weekly rollups")
+            }, error = function(e) list(ok = FALSE, path = NA_character_, msg = conditionMessage(e)))
+          }
+        }
+      }
+    }
+
+    # -----------------------------
+    # Outputs 5-6 (MX)
     # -----------------------------
     mx_metric_cols <- loader_meta$detected_metrics_num
     if (is.null(mx_metric_cols) || !length(mx_metric_cols)) {
       mx_metric_cols <- intersect(c("ac","enmo","mad","mims_unit","ai","rocam"), names(DT))
     }
 
-    status$output5 <- tryCatch({
-      out5 <- ua_make_mx_daily(
-        DT = DT,
-        metric_cols = mx_metric_cols,
-        demo_id = demo_id,
-        epoch_sec = epoch_sec,
-        location = location,
-        mx_values = mx_values
-      )
-      p <- ua_write_csv(out5, file.path(run_folder, sprintf("UA_Output5_DAILY_MX_epoch%ss_%s.csv", epoch_sec, run_date)))
-      list(ok = TRUE, path = p, msg = "")
-    }, error = function(e) list(ok = FALSE, path = NA_character_, msg = conditionMessage(e)))
-
-    # -----------------------------
-    # Output6: WEEKLY MX
-    # -----------------------------
-    status$output6 <- list(ok = TRUE, path = NA_character_, msg = "skipped (make_weekly=FALSE)")
-    if (isTRUE(make_weekly)) {
-      status$output6 <- tryCatch({
-        mx_daily <- ua_make_mx_daily(
+    if (wants_output("output5")) {
+      status$output5 <- tryCatch({
+        out5 <- ua_make_mx_daily(
           DT = DT,
           metric_cols = mx_metric_cols,
           demo_id = demo_id,
@@ -891,17 +802,41 @@ ua_run_end_to_end <- function(in_path,
           location = location,
           mx_values = mx_values
         )
-        out6 <- ua_make_mx_weekly(mx_daily)
-        p <- ua_write_csv(out6, file.path(run_folder, sprintf("UA_Output6_WEEKLY_MX_epoch%ss_%s.csv", epoch_sec, run_date)))
-        list(ok = TRUE, path = p, msg = "wrote weekly MX")
+        out5 <- drop_empty_columns(out5, c("sex", "age", "category"))
+        p <- ua_write_csv(out5, file.path(run_folder, sprintf("UA_Output5_DAILY_MX_epoch%ss_%s.csv", epoch_sec, run_date)))
+        list(ok = TRUE, path = p, msg = "")
       }, error = function(e) list(ok = FALSE, path = NA_character_, msg = conditionMessage(e)))
     }
 
-    invisible(status)
+    if (wants_output("output6")) {
+      if (!isTRUE(make_weekly)) {
+        status$output6 <- list(ok = TRUE, path = NA_character_, msg = "skipped: make_weekly=FALSE")
+      } else {
+        status$output6 <- tryCatch({
+          mx_daily <- ua_make_mx_daily(
+            DT = DT,
+            metric_cols = mx_metric_cols,
+            demo_id = demo_id,
+            epoch_sec = epoch_sec,
+            location = location,
+            mx_values = mx_values
+          )
+          out6 <- ua_make_mx_weekly(mx_daily)
+          out6 <- drop_empty_columns(out6, c("sex", "age", "category"))
+          p <- ua_write_csv(out6, file.path(run_folder, sprintf("UA_Output6_WEEKLY_MX_epoch%ss_%s.csv", epoch_sec, run_date)))
+          list(ok = TRUE, path = p, msg = "wrote weekly MX")
+        }, error = function(e) list(ok = FALSE, path = NA_character_, msg = conditionMessage(e)))
+      }
+    }
+
+    invisible(list(
+      run_folder = run_folder,
+      status = status
+    ))
   }
 
   # ============================================================
-  # FILE or FOLDER ENTRYPOINT (NO COMBINING)
+  # Entry point
   # ============================================================
   if (!is.character(in_path) || length(in_path) != 1L || !nzchar(in_path)) {
     stop("in_path must be a single non-empty file or folder path.", call. = FALSE)
