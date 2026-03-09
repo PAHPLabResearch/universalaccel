@@ -13,12 +13,43 @@ These summary metrics can be derived from raw ActiGraph, Axivity, and GENEActiv 
 
 The UA provides stable, reproducible epoch-level outputs and a downstream analysis workflow for daily intensity distributions interpretation using NHANES (National Health and Nutrition Examination Survey) references.
 
-## 🚀 Installation
+## 🚀 Installation and quick start
 ```r
 install.packages("remotes")
 remotes::install_github("PAHPLabResearch/universalaccel")
+
+# Step 1. Summarize raw accelerometer data
+
+library(universalaccel)
+in_dir  <- "C:/Users/..."
+out_dir <- "C:/Users/..."
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+universalaccel::accel_summaries(
+  device        = "actigraph", # can take axivity, geneactiv, or generic
+  data_folder   = in_dir,
+  output_folder = out_dir,
+  metrics       = c("MIMS","COUNTS","AI", "ENMO", "MAD", "ROCAM"),
+  epochs        = c(60,30,15,5,1),
+  sample_rate   = 50, 
+  dynamic_range = c(-8, 8),
+  apply_nonwear = TRUE,
+  autocalibrate = TRUE
+)
+
+# Step 2. Calculate intensity gradient and MX metrics (minimum acceleration above which most active minutes were accumulated)
+
+library(universalaccel)
+analysis <- ua_run(
+  in_path     = "C:/Users/...", # Accept outputs from step 1
+  out_dir     = "C:/Users/...",
+  location    = "ndw",
+  make_weekly = TRUE,
+  overwrite   = TRUE
+)
 ```
-## 📘 Consult the UA manual for detailed specifications and data processing steps
+
+## 📘 Consult the UA manual for technical details
 
 [![PDF Manual](https://img.shields.io/badge/UA%20Manual-PDF-blue)](https://github.com/PAHPLabResearch/universalaccel/blob/main/data/UA_Manual.pdf)
 
