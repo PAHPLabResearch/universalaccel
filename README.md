@@ -37,7 +37,7 @@ universalaccel::accel_summaries(
   autocalibrate = TRUE
 )
 
-# Step 2. Calculate intensity gradient and MX metrics (minimum acceleration above which most active minutes were accumulated)
+# Step 2. Calculate intensity gradient and MX metrics (most active minutes)
 
 library(universalaccel)
 analysis <- ua_run(
