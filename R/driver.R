@@ -6,7 +6,9 @@
 #' - optionally computes COUNTS in background to obtain Vector.Magnitude for Choi nonwear
 #' - joins metrics by (time, ID)
 #' - writes output CSV per epoch
-#' - writes one professional .txt log for the run
+#' - writes:
+#'   * one narrative .txt processing log for the run
+#'   * one structured .csv processing summary for the run
 #'
 #' Time writing policy:
 #' - internal computations preserve loader-returned instants
@@ -167,77 +169,63 @@ accel_summaries <- function(device, data_folder, output_folder,
 
   run_start <- Sys.time()
   run_id <- format(run_start, "%Y%m%d_%H%M%S")
-  log_path <- file.path(output_folder, paste0("UA_summarypreprocessing_Log_", run_id, ".txt"))
+  log_txt_path <- file.path(output_folder, paste0("UA_processing_log_", run_id, ".txt"))
+  log_csv_path <- file.path(output_folder, paste0("UA_processing_summary_", run_id, ".csv"))
+
   log_rows <- list()
   file_detail_lines <- character()
-
-  fmt_cell <- function(x, w) {
-    x <- if (is.null(x) || length(x) == 0 || is.na(x)) "" else as.character(x)
-    x <- gsub("[\r\n\t]+", " ", x)
-    if (nchar(x) > w) x <- paste0(substr(x, 1, w - 3), "...")
-    sprintf(paste0("%-", w, "s"), x)
-  }
-
-  make_table <- function(df, widths) {
-    stopifnot(is.data.frame(df))
-    cols <- names(df)
-    if (length(widths) != length(cols)) stop("widths must match number of columns")
-    header <- paste(mapply(fmt_cell, cols, widths), collapse = " | ")
-    sep <- paste(mapply(function(x) paste(rep("-", x), collapse = ""), widths), collapse = "-+-")
-    body <- apply(df, 1, function(row) paste(mapply(fmt_cell, row, widths), collapse = " | "))
-    c(header, sep, body)
-  }
 
   append_detail <- function(...) {
     file_detail_lines <<- c(file_detail_lines, paste0(...))
     invisible(NULL)
   }
 
-  loader <- switch(tolower(device),
-                   "actigraph" = function(fp, sample_rate, tz) {
-                     read_and_calibrate_actigraph(
-                       fp,
-                       sample_rate = sample_rate,
-                       tz = tz,
-                       autocalibrate = autocalibrate,
-                       verbose = generic_verbose
-                     )
-                   },
-                   "axivity"   = function(fp, sample_rate, tz) {
-                     safe_read_axivity_with_fallback(
-                       fp,
-                       sample_rate = sample_rate,
-                       tz = tz
-                     )
-                   },
-                   "geneactiv" = function(fp, sample_rate, tz) {
-                     read_and_calibrate_geneactiv(
-                       fp,
-                       sample_rate = sample_rate,
-                       tz = tz,
-                       autocalibrate = autocalibrate,
-                       verbose = generic_verbose
-                     )
-                   },
-                   "generic"   = function(fp, sample_rate, tz) {
-                     read_and_calibrate_generic(
-                       fp,
-                       sample_rate   = sample_rate,
-                       tz            = tz,
-                       autocalibrate = autocalibrate,
-                       units         = generic_units,
-                       verbose       = generic_verbose
-                     )
-                   },
-                   stop("Unknown device: ", device,
-                        ". Valid: actigraph, axivity, geneactiv, generic")
+  loader <- switch(
+    tolower(device),
+    "actigraph" = function(fp, sample_rate, tz) {
+      read_and_calibrate_actigraph(
+        fp,
+        sample_rate = sample_rate,
+        tz = tz,
+        autocalibrate = autocalibrate,
+        verbose = generic_verbose
+      )
+    },
+    "axivity" = function(fp, sample_rate, tz) {
+      safe_read_axivity_with_fallback(
+        fp,
+        sample_rate = sample_rate,
+        tz = tz
+      )
+    },
+    "geneactiv" = function(fp, sample_rate, tz) {
+      read_and_calibrate_geneactiv(
+        fp,
+        sample_rate = sample_rate,
+        tz = tz,
+        autocalibrate = autocalibrate,
+        verbose = generic_verbose
+      )
+    },
+    "generic" = function(fp, sample_rate, tz) {
+      read_and_calibrate_generic(
+        fp,
+        sample_rate   = sample_rate,
+        tz            = tz,
+        autocalibrate = autocalibrate,
+        units         = generic_units,
+        verbose       = generic_verbose
+      )
+    },
+    stop("Unknown device: ", device, ". Valid: actigraph, axivity, geneactiv, generic")
   )
 
-  pattern <- switch(tolower(device),
-                    "actigraph" = "\\.gt3x$",
-                    "axivity"   = "\\.(cwa|csv|csv\\.gz)$",
-                    "geneactiv" = "\\.bin$",
-                    "generic"   = "\\.(csv(\\.gz)?|rds|rda|rdata|xlsx|xls|parquet|feather)$"
+  pattern <- switch(
+    tolower(device),
+    "actigraph" = "\\.gt3x$",
+    "axivity"   = "\\.(cwa|csv|csv\\.gz)$",
+    "geneactiv" = "\\.bin$",
+    "generic"   = "\\.(csv(\\.gz)?|rds|rda|rdata|xlsx|xls|parquet|feather)$"
   )
 
   files <- list.files(data_folder, pattern = pattern, full.names = TRUE)
@@ -264,12 +252,12 @@ accel_summaries <- function(device, data_folder, output_folder,
   }
 
   run_metric <- list(
-    MIMS   = function(d,f,e)  calculate_mims(d, f, e, dynamic_range = dynamic_range),
-    AI     = function(d,f,e)  calculate_ai(d, f, e, sample_rate = sample_rate),
-    COUNTS = function(d,f,e)  calculate_activity_counts(d, f, e, sample_rate = sample_rate),
-    ENMO   = function(d,f,e)  calculate_enmo(d, f, e),
-    MAD    = function(d,f,e)  calculate_mad(d, f, e),
-    ROCAM  = function(d,f,e)  calculate_rocam(d, f, e)
+    MIMS   = function(d,f,e) calculate_mims(d, f, e, dynamic_range = dynamic_range),
+    AI     = function(d,f,e) calculate_ai(d, f, e, sample_rate = sample_rate),
+    COUNTS = function(d,f,e) calculate_activity_counts(d, f, e, sample_rate = sample_rate),
+    ENMO   = function(d,f,e) calculate_enmo(d, f, e),
+    MAD    = function(d,f,e) calculate_mad(d, f, e),
+    ROCAM  = function(d,f,e) calculate_rocam(d, f, e)
   )
 
   mark_nonwear_epoch <- function(joined, epoch_sec) {
@@ -312,7 +300,7 @@ accel_summaries <- function(device, data_folder, output_folder,
   }
 
   header_lines <- c(
-    "UNIVERSALACCEL SUMMARY PREPROCESSING LOG",
+    "UNIVERSALACCEL PROCESSING LOG",
     paste0("Run ID: ", run_id),
     paste0("Run started: ", format(run_start, "%Y-%m-%d %H:%M:%S")),
     "",
@@ -337,7 +325,46 @@ accel_summaries <- function(device, data_folder, output_folder,
     "  this avoids silent UTC/Z serialization in exported CSV files",
     ""
   )
-  writeLines(header_lines, con = log_path)
+  writeLines(header_lines, con = log_txt_path)
+
+  make_log_row <- function(epoch_s, file, status, seconds, n_samples,
+                           first_time, last_time, spec,
+                           counts_bg, nonwear, note = "") {
+    data.frame(
+      run_id = run_id,
+      device = tolower(device),
+      epoch_s = epoch_s,
+      file = file,
+      status = status,
+      seconds = seconds,
+      n_samples = n_samples,
+      first_time = first_time,
+      last_time = last_time,
+      time_model = spec$model %||% NA_character_,
+      source_tz = spec$source_tz %||% NA_character_,
+      output_tz = spec$output_tz %||% tz,
+      tz_rule = spec$tz_rule %||% NA_character_,
+      grid_action = spec$grid_action %||% NA_character_,
+      autocal = if (isTRUE(spec$calibration_success)) "yes" else "no",
+      autocal_note = spec$calibration_note %||% NA_character_,
+      counts_bg = counts_bg,
+      nonwear = nonwear,
+      note = note,
+      stringsAsFactors = FALSE
+    )
+  }
+
+  empty_spec <- function() {
+    list(
+      model = NA_character_,
+      source_tz = NA_character_,
+      output_tz = tz,
+      tz_rule = NA_character_,
+      grid_action = NA_character_,
+      calibration_success = FALSE,
+      calibration_note = NA_character_
+    )
+  }
 
   for (epoch in epochs) {
     epoch <- as.integer(epoch)
@@ -359,7 +386,7 @@ accel_summaries <- function(device, data_folder, output_folder,
           f_end <- Sys.time()
           message("  [ERR] Loader failed: ", file_name)
           message("        reason: ", conditionMessage(e))
-          log_rows[[length(log_rows) + 1L]] <<- data.frame(
+          log_rows[[length(log_rows) + 1L]] <<- make_log_row(
             epoch_s = epoch,
             file = file_name,
             status = "LOADER_FAIL",
@@ -367,17 +394,10 @@ accel_summaries <- function(device, data_folder, output_folder,
             n_samples = NA_integer_,
             first_time = NA_character_,
             last_time = NA_character_,
-            time_model = NA_character_,
-            source_tz = NA_character_,
-            output_tz = tz,
-            tz_rule = NA_character_,
-            grid_action = NA_character_,
-            autocal = NA_character_,
-            autocal_note = NA_character_,
+            spec = empty_spec(),
             counts_bg = "no",
             nonwear = if (isTRUE(apply_nonwear)) "requested" else "off",
-            note = conditionMessage(e),
-            stringsAsFactors = FALSE
+            note = conditionMessage(e)
           )
           return(NULL)
         }
@@ -385,7 +405,6 @@ accel_summaries <- function(device, data_folder, output_folder,
       if (is.null(df_cal)) return(NULL)
 
       df_cal$time <- force_posix_time(df_cal$time)
-
       message("  [LOAD] ok: n=", nrow(df_cal))
 
       spec <- attr(df_cal, "ua_time_spec")
@@ -424,8 +443,7 @@ accel_summaries <- function(device, data_folder, output_folder,
       }
 
       pieces <- lapply(metrics_run, function(m) {
-        tryCatch(run_metric[[m]](df_cal, fp, epoch),
-                 error = function(e) NULL)
+        tryCatch(run_metric[[m]](df_cal, fp, epoch), error = function(e) NULL)
       })
       names(pieces) <- metrics_run
 
@@ -473,7 +491,7 @@ accel_summaries <- function(device, data_folder, output_folder,
         f_end <- Sys.time()
         message("  [SKIP] ", file_name, " skipped because metric(s) failed/empty: ",
                 paste(empties, collapse = ", "))
-        log_rows[[length(log_rows) + 1L]] <<- data.frame(
+        log_rows[[length(log_rows) + 1L]] <<- make_log_row(
           epoch_s = epoch,
           file = file_name,
           status = "METRIC_FAIL",
@@ -481,17 +499,10 @@ accel_summaries <- function(device, data_folder, output_folder,
           n_samples = nrow(df_cal),
           first_time = first_time_chr,
           last_time = last_time_chr,
-          time_model = spec$model %||% NA_character_,
-          source_tz = spec$source_tz %||% NA_character_,
-          output_tz = spec$output_tz %||% tz,
-          tz_rule = spec$tz_rule %||% NA_character_,
-          grid_action = spec$grid_action %||% NA_character_,
-          autocal = if (isTRUE(spec$calibration_success)) "yes" else "no",
-          autocal_note = spec$calibration_note %||% NA_character_,
+          spec = spec,
           counts_bg = counts_bg_status,
           nonwear = if (isTRUE(apply_nonwear)) "requested" else "off",
-          note = paste0("Empty metric(s): ", paste(empties, collapse = ", ")),
-          stringsAsFactors = FALSE
+          note = paste0("Empty metric(s): ", paste(empties, collapse = ", "))
         )
         return(NULL)
       }
@@ -504,11 +515,14 @@ accel_summaries <- function(device, data_folder, output_folder,
         dplyr::distinct(d, time, ID, .keep_all = TRUE)
       })
 
-      joined <- suppressMessages(Reduce(function(x, y) dplyr::inner_join(x, y, by = c("time", "ID")), pieces_for_join))
+      joined <- suppressMessages(
+        Reduce(function(x, y) dplyr::inner_join(x, y, by = c("time", "ID")), pieces_for_join)
+      )
+
       if (!nrow(joined)) {
         f_end <- Sys.time()
         message("  [SKIP] join produced 0 rows")
-        log_rows[[length(log_rows) + 1L]] <<- data.frame(
+        log_rows[[length(log_rows) + 1L]] <<- make_log_row(
           epoch_s = epoch,
           file = file_name,
           status = "JOIN_ZERO",
@@ -516,17 +530,10 @@ accel_summaries <- function(device, data_folder, output_folder,
           n_samples = nrow(df_cal),
           first_time = first_time_chr,
           last_time = last_time_chr,
-          time_model = spec$model %||% NA_character_,
-          source_tz = spec$source_tz %||% NA_character_,
-          output_tz = spec$output_tz %||% tz,
-          tz_rule = spec$tz_rule %||% NA_character_,
-          grid_action = spec$grid_action %||% NA_character_,
-          autocal = if (isTRUE(spec$calibration_success)) "yes" else "no",
-          autocal_note = spec$calibration_note %||% NA_character_,
+          spec = spec,
           counts_bg = counts_bg_status,
           nonwear = if (isTRUE(apply_nonwear)) "requested" else "off",
-          note = "Inner join produced 0 rows",
-          stringsAsFactors = FALSE
+          note = "Inner join produced 0 rows"
         )
         return(NULL)
       }
@@ -536,10 +543,11 @@ accel_summaries <- function(device, data_folder, output_folder,
         nonwear_status <- "applied"
         message("  [NONWEAR] Choi: epoch=", epoch, "s")
         joined <- mark_nonwear_epoch(joined, epoch_sec = epoch)
+
         if (!nrow(joined)) {
           f_end <- Sys.time()
           message("  [SKIP] all rows removed as nonwear")
-          log_rows[[length(log_rows) + 1L]] <<- data.frame(
+          log_rows[[length(log_rows) + 1L]] <<- make_log_row(
             epoch_s = epoch,
             file = file_name,
             status = "NONWEAR_ALL",
@@ -547,17 +555,10 @@ accel_summaries <- function(device, data_folder, output_folder,
             n_samples = nrow(df_cal),
             first_time = first_time_chr,
             last_time = last_time_chr,
-            time_model = spec$model %||% NA_character_,
-            source_tz = spec$source_tz %||% NA_character_,
-            output_tz = spec$output_tz %||% tz,
-            tz_rule = spec$tz_rule %||% NA_character_,
-            grid_action = spec$grid_action %||% NA_character_,
-            autocal = if (isTRUE(spec$calibration_success)) "yes" else "no",
-            autocal_note = spec$calibration_note %||% NA_character_,
+            spec = spec,
             counts_bg = counts_bg_status,
             nonwear = "applied",
-            note = "All rows removed as nonwear",
-            stringsAsFactors = FALSE
+            note = "All rows removed as nonwear"
           )
           return(NULL)
         }
@@ -569,16 +570,18 @@ accel_summaries <- function(device, data_folder, output_folder,
       }
 
       if (used_counts_bg && !user_requested_counts) {
-        drop_cols <- intersect(names(joined),
-                               c("Axis1", "Axis2", "Axis3", "Steps", "Vector.Magnitude",
-                                 "Lux", "Inclination", "Temperature"))
+        drop_cols <- intersect(
+          names(joined),
+          c("Axis1", "Axis2", "Axis3", "Steps", "Vector.Magnitude",
+            "Lux", "Inclination", "Temperature")
+        )
         joined <- dplyr::select(joined, -dplyr::any_of(drop_cols))
       }
 
       joined$time <- force_posix_time(joined$time)
 
       f_end <- Sys.time()
-      log_rows[[length(log_rows) + 1L]] <<- data.frame(
+      log_rows[[length(log_rows) + 1L]] <<- make_log_row(
         epoch_s = epoch,
         file = file_name,
         status = "OK",
@@ -586,17 +589,10 @@ accel_summaries <- function(device, data_folder, output_folder,
         n_samples = nrow(df_cal),
         first_time = first_time_chr,
         last_time = last_time_chr,
-        time_model = spec$model %||% NA_character_,
-        source_tz = spec$source_tz %||% NA_character_,
-        output_tz = spec$output_tz %||% tz,
-        tz_rule = spec$tz_rule %||% NA_character_,
-        grid_action = spec$grid_action %||% NA_character_,
-        autocal = if (isTRUE(spec$calibration_success)) "yes" else "no",
-        autocal_note = spec$calibration_note %||% NA_character_,
+        spec = spec,
         counts_bg = counts_bg_status,
         nonwear = nonwear_status,
-        note = spec$dispatch_note %||% "",
-        stringsAsFactors = FALSE
+        note = ""
       )
 
       message("  [DONE] ", file_name, " -> ", nrow(joined), " rows")
@@ -621,9 +617,7 @@ accel_summaries <- function(device, data_folder, output_folder,
     final_df$time <- force_posix_time(final_df$time)
 
     final_df_out <- final_df |>
-      dplyr::mutate(
-        time = format_time_in_tz(time, tz_out = tz)
-      )
+      dplyr::mutate(time = format_time_in_tz(time, tz_out = tz))
 
     out_file <- file.path(
       output_folder,
@@ -647,44 +641,8 @@ accel_summaries <- function(device, data_folder, output_folder,
   elapsed_total <- round(as.numeric(difftime(run_end, run_start, units = "secs")), 3)
   log_df <- if (length(log_rows)) do.call(rbind, log_rows) else data.frame()
 
-  write(
-    x = c("",
-          "FILE RESULTS TABLE (one row per file per epoch)",
-          "Columns: epoch_s, file, status, seconds, n_samples, first_time, last_time, time_model, source_tz, output_tz, tz_rule, grid_action, autocal, autocal_note, counts_bg, nonwear, note"),
-    file = log_path,
-    append = TRUE
-  )
-
-  if (nrow(log_df)) {
-    table_lines <- make_table(
-      log_df,
-      widths = c(
-        7,   # epoch_s
-        28,  # file
-        12,  # status
-        8,   # seconds
-        10,  # n_samples
-        23,  # first_time
-        23,  # last_time
-        16,  # time_model
-        18,  # source_tz
-        18,  # output_tz
-        18,  # tz_rule
-        12,  # grid_action
-        8,   # autocal
-        28,  # autocal_note
-        10,  # counts_bg
-        12,  # nonwear
-        28   # note
-      )
-    )
-    write(table_lines, file = log_path, append = TRUE)
-  } else {
-    write("No files produced log rows.", file = log_path, append = TRUE)
-  }
-
   if (length(file_detail_lines)) {
-    write(c("", "DETAILED FILE NOTES", file_detail_lines), file = log_path, append = TRUE)
+    write(c("", "DETAILED FILE NOTES", file_detail_lines), file = log_txt_path, append = TRUE)
   }
 
   ok_n <- if (nrow(log_df)) sum(log_df$status == "OK", na.rm = TRUE) else 0L
@@ -699,7 +657,7 @@ accel_summaries <- function(device, data_folder, output_folder,
     paste0("  files x epochs with issues: ", fail_n),
     ""
   )
-  write(summary_lines, file = log_path, append = TRUE)
+  write(summary_lines, file = log_txt_path, append = TRUE)
 
   glossary_lines <- c(
     "ABBREVIATIONS & EXPLANATIONS",
@@ -767,9 +725,20 @@ accel_summaries <- function(device, data_folder, output_folder,
     "  7) For device='axivity', non-OMGUI CSV files are automatically rerouted to the generic loader.",
     ""
   )
-  write(glossary_lines, file = log_path, append = TRUE)
+  write(glossary_lines, file = log_txt_path, append = TRUE)
 
-  message("[LOG] wrote: ", log_path)
+  if (nrow(log_df)) {
+    readr::write_csv(log_df, log_csv_path)
+  } else {
+    readr::write_csv(data.frame(), log_csv_path)
+  }
 
-  invisible(list(output_folder = output_folder, log_file = log_path))
+  message("[LOG] wrote: ", log_txt_path)
+  message("[LOG] wrote: ", log_csv_path)
+
+  invisible(list(
+    output_folder = output_folder,
+    log_file_txt = log_txt_path,
+    log_file_csv = log_csv_path
+  ))
 }

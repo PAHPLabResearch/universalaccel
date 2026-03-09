@@ -596,7 +596,7 @@ ua_run_end_to_end <- function(in_path,
       metrics_line <- paste(loader_meta$detected_metrics_num %||% character(0), collapse = ", ")
       if (!nzchar(metrics_line)) metrics_line <- "(none detected)"
 
-      out7_path <- file.path(run_folder, sprintf("UA_Output7_LOGISTICS_epoch%ss_%s.txt", epoch_sec, run_date))
+      out7_path <- file.path(run_folder, sprintf("UA_Output7_LOG_epoch%ss_%s.txt", epoch_sec, run_date))
 
       out7_lines <- c(
         "universalaccel — end-to-end run report",
@@ -745,8 +745,19 @@ ua_run_end_to_end <- function(in_path,
       if (is.null(zdt) || !nrow(zdt)) rep(NA_character_, .N) else assign_bands_from_zones(midpoint, zdt)
     }, by = .(id, day, metric, epoch_sec, anchor, category_key)]
 
+
+    keep_output1 <- intersect(
+      c(
+        "id","day","metric","time_bin_min","lower","upper","midpoint","width",
+        "log_midpoint","log_time_bin","epoch_sec","location","cm_time_min"
+      ),
+      names(bins)
+    )
+
+    out1 <- bins[, ..keep_output1]
+
     status$output1 <- tryCatch({
-      p <- ua_write_csv(bins, file.path(run_folder, sprintf("UA_Output1_BINS_epoch%ss_%s.csv", epoch_sec, run_date)))
+      p <- ua_write_csv(out1, file.path(run_folder, sprintf("UA_Output1_BINS_epoch%ss_%s.csv", epoch_sec, run_date)))
       list(ok = TRUE, path = p, msg = "")
     }, error = function(e) list(ok = FALSE, path = NA_character_, msg = conditionMessage(e)))
     if (!status$output1$ok) stop(status$output1$msg, call. = FALSE)

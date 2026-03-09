@@ -26,7 +26,11 @@ accel_summaries(
 \item optionally computes COUNTS in background to obtain Vector.Magnitude for Choi nonwear
 \item joins metrics by (time, ID)
 \item writes output CSV per epoch
-\item writes one professional .txt log for the run
+\item writes:
+\itemize{
+\item one narrative .txt processing log for the run
+\item one structured .csv processing summary for the run
+}
 }
 }
 \details{
