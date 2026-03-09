@@ -25,7 +25,7 @@ in_dir  <- "C:/Users/..."
 out_dir <- "C:/Users/..."
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
-universalaccel::accel_summaries(
+accel_summaries(
   device        = "actigraph", # can take axivity, geneactiv, or generic
   data_folder   = in_dir,
   output_folder = out_dir,
