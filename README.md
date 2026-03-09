@@ -38,7 +38,7 @@ accel_summaries(
 )
 
 # Step 2. Calculate intensity gradient and MX metrics (most active minutes)
-
+library(universalaccel)
 ua_run(
   in_path     = "C:/Users/...", # Accept outputs from step 1
   out_dir     = "C:/Users/...",
