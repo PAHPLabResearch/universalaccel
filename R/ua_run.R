@@ -12,7 +12,7 @@
 #'
 #' Folder behavior:
 #'   - Every file in the folder is processed independently (no combining).
-#'   - Each file creates its own output folder.
+#'   - Each file creates its own output folder under `out_dir/UA_runs/`.
 #'
 #' @param in_path Path to a precomputed file OR a folder containing files.
 #' @param out_dir Output directory where UA outputs will be written.
@@ -22,8 +22,16 @@
 #' @param fail_fast If TRUE, stop on first file error. If FALSE, continue and report failures.
 #' @param outputs Character vector of requested outputs. Allowed:
 #'   "output1","output2","output3","output4","output5","output6".
-#'   Outputs 1–4 are reference-based and currently require epoch 5 or 60.
-#'   Outputs 5–6 (MX) can run for any single epoch.
+#'
+#'   Current meaning:
+#'   - output1 = daily binned intensity distribution
+#'   - output2 = IG & Volume (daily + weekly)
+#'   - output3 = daily MX
+#'   - output4 = weekly MX
+#'   - output5 = daily intensity bin summary + NHANES references
+#'   - output6 = IG & Volume percentiles in NHANES
+#'
+#'   NHANES-referenced outputs currently require epoch 5 or 60.
 #'
 #' @return Invisibly returns a data.table index (one row per file) with status and output folder.
 #' @export
@@ -62,17 +70,65 @@ ua_analyze_precomputed <- function(in_path,
   }
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-  in_path_norm <- tryCatch(normalizePath(in_path, winslash = "/", mustWork = FALSE),
-                           error = function(e) in_path)
+  in_path_norm <- tryCatch(
+    normalizePath(in_path, winslash = "/", mustWork = FALSE),
+    error = function(e) in_path
+  )
 
   is_supported <- function(x) {
-    ok_ext <- grepl("\\.(csv|xlsx|xls|rds)$", x, ignore.case = TRUE)
+    ok_ext <- grepl("\\.(csv|txt|xlsx|xls|rds)$", x, ignore.case = TRUE)
     bad_name <- grepl(
       "^(UA_processing_log_|UA_processing_summary_|UA_FOLDER_INDEX_|UA_Output[0-9]+_)",
       basename(x),
       ignore.case = TRUE
     )
     ok_ext & !bad_name
+  }
+
+  extract_run_folder <- function(run_obj) {
+    rf <- NA_character_
+
+    if (is.list(run_obj) &&
+        !is.null(run_obj$run_folder) &&
+        length(run_obj$run_folder) == 1L &&
+        !is.na(run_obj$run_folder) &&
+        nzchar(run_obj$run_folder)) {
+      rf <- as.character(run_obj$run_folder)
+      return(rf)
+    }
+
+    if (is.list(run_obj) && !is.null(run_obj$status) && is.list(run_obj$status)) {
+      for (nm in c("output7", "output1", "output2", "output3", "output4", "output5", "output6")) {
+        st <- run_obj$status[[nm]]
+        if (is.list(st) &&
+            !is.null(st$path) &&
+            length(st$path) == 1L &&
+            !is.na(st$path) &&
+            nzchar(st$path)) {
+          rf <- dirname(as.character(st$path))
+          return(rf)
+        }
+      }
+    }
+
+    rf
+  }
+
+  run_one_wrapper <- function(f) {
+    tryCatch(
+      {
+        out <- ua_run_end_to_end(
+          in_path     = f,
+          out_dir     = out_dir,
+          location    = location,
+          make_weekly = make_weekly,
+          overwrite   = overwrite,
+          outputs     = outputs
+        )
+        list(ok = TRUE, out = out, err = NULL)
+      },
+      error = function(e) list(ok = FALSE, out = NULL, err = conditionMessage(e))
+    )
   }
 
   if (dir.exists(in_path_norm)) {
@@ -102,29 +158,14 @@ ua_analyze_precomputed <- function(in_path,
       f <- cand[i]
       message(sprintf("[UA] (%d/%d) %s", i, length(cand), basename(f)))
 
-      res <- tryCatch(
-        {
-          out <- ua_run_end_to_end(
-            in_path     = f,
-            out_dir     = out_dir,
-            location    = location,
-            make_weekly = make_weekly,
-            overwrite   = overwrite,
-            outputs     = outputs
-          )
-          list(ok = TRUE, out = out, err = NULL)
-        },
-        error = function(e) list(ok = FALSE, out = NULL, err = conditionMessage(e))
-      )
+      res <- run_one_wrapper(f)
 
       if (isTRUE(res$ok)) {
         idx[i, status := "ok"]
-        if (is.list(res$out) && !is.null(res$out$run_folder)) {
-          idx[i, run_folder := as.character(res$out$run_folder)]
-        }
+        idx[i, run_folder := extract_run_folder(res$out)]
       } else {
         idx[i, status := "failed"]
-        idx[i, error := res$err]
+        idx[i, error := as.character(res$err)]
         if (isTRUE(fail_fast)) {
           stop(sprintf("File failed: %s\nReason: %s", basename(f), res$err), call. = FALSE)
         }
@@ -142,7 +183,7 @@ ua_analyze_precomputed <- function(in_path,
     stop("in_path does not exist: ", in_path_norm, call. = FALSE)
   }
   if (!is_supported(in_path_norm)) {
-    stop("Unsupported file type (allowed: csv/txt, xlsx/xls, rds): ", in_path_norm, call. = FALSE)
+    stop("Unsupported file type (allowed: csv/txt/xlsx/xls/rds): ", in_path_norm, call. = FALSE)
   }
 
   out <- ua_run_end_to_end(
@@ -159,9 +200,10 @@ ua_analyze_precomputed <- function(in_path,
     file_name  = basename(in_path_norm),
     status     = "ok",
     error      = NA_character_,
-    run_folder = if (is.list(out) && !is.null(out$run_folder)) as.character(out$run_folder) else NA_character_
+    run_folder = extract_run_folder(out)
   )
-  return(invisible(idx1))
+
+  invisible(idx1)
 }
 
 #' Run universalaccel precomputed workflow end-to-end

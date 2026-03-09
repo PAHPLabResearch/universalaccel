@@ -29,8 +29,18 @@ ua_run(
 
 \item{outputs}{Character vector of requested outputs. Allowed:
 "output1","output2","output3","output4","output5","output6".
-Outputs 1–4 are reference-based and currently require epoch 5 or 60.
-Outputs 5–6 (MX) can run for any single epoch.}
+
+Current meaning:
+\itemize{
+\item output1 = daily binned intensity distribution
+\item output2 = IG & Volume (daily + weekly)
+\item output3 = daily MX
+\item output4 = weekly MX
+\item output5 = daily intensity bin summary + NHANES references
+\item output6 = IG & Volume percentiles in NHANES
+}
+
+NHANES-referenced outputs currently require epoch 5 or 60.}
 }
 \description{
 \code{ua_run()} is kept as a stable alias for \code{ua_analyze_precomputed()}.
