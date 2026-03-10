@@ -2,7 +2,7 @@
   if (is.null(x) || length(x) == 0 || all(is.na(x))) y else x
 }
 
-extract_id <- function(file_path) {
+clean_id <- function(file_path) {
   nm <- basename(file_path)
   nm <- sub("\\..*$", "", nm)
   sub("[-_].*$", "", nm)
