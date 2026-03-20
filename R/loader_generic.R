@@ -822,13 +822,31 @@ read_and_calibrate_generic <- function(file_path,
     yc_exp <- resolve_col(df, y_col)
     zc_exp <- resolve_col(df, z_col)
 
+    # ------------------------------------------------------------
+    # 1) Explicit user specification wins
+    # ------------------------------------------------------------
     if (!is.null(tc_exp) && !is.null(xc_exp) && !is.null(yc_exp) && !is.null(zc_exp)) {
-      return(list(time_col = tc_exp, x_col = xc_exp, y_col = yc_exp, z_col = zc_exp, df = df, time_pick = NULL))
+      add_report(sprintf(
+        "Column mapping used explicit user specification: time=%s, X=%s, Y=%s, Z=%s.",
+        tc_exp, xc_exp, yc_exp, zc_exp
+      ))
+      return(list(
+        time_col = tc_exp,
+        x_col = xc_exp,
+        y_col = yc_exp,
+        z_col = zc_exp,
+        df = df,
+        time_pick = NULL,
+        axis_detection_mode = "explicit"
+      ))
     }
 
     nms <- names(df)
     has_names <- !is.null(nms) && all(nzchar(nms)) && !all(grepl("^v\\d+$", nms))
 
+    # ------------------------------------------------------------
+    # 2) Try robust name-based detection first
+    # ------------------------------------------------------------
     if (has_names) {
       t_idx <- guess_time_by_names(nms)
       xyz <- guess_xyz_by_names(nms)
@@ -838,44 +856,101 @@ read_and_calibrate_generic <- function(file_path,
       yc <- yc_exp %||% if (length(xyz$y)) nms[xyz$y[1]] else NA_character_
       zc <- zc_exp %||% if (length(xyz$z)) nms[xyz$z[1]] else NA_character_
 
-      if (anyNA(c(tc, xc, yc, zc))) {
-        best <- pick_time_col(df, seq_along(df))
-        if (!is.na(best$idx)) tc <- nms[best$idx]
-
-        ex <- if (!is.na(best$idx)) best$idx else integer()
-        xyz_idx <- pick_xyz_cols(df, exclude_idx = ex)
-        if (!is.null(xyz_idx)) {
-          cn <- nms[xyz_idx]
-          vv <- vapply(df[xyz_idx], function(v) stats::var(as.numeric(v), na.rm = TRUE), numeric(1))
-          ord <- order(vv, decreasing = TRUE)
-          xc <- cn[ord[1]]
-          yc <- cn[ord[2]]
-          zc <- cn[ord[3]]
-        }
-
-        return(list(time_col = tc, x_col = xc, y_col = yc, z_col = zc, df = df, time_pick = best))
+      # fully detected by names
+      if (!anyNA(c(tc, xc, yc, zc))) {
+        add_report(sprintf(
+          "Column mapping detected from names: time=%s, X=%s, Y=%s, Z=%s.",
+          tc, xc, yc, zc
+        ))
+        return(list(
+          time_col = tc,
+          x_col = xc,
+          y_col = yc,
+          z_col = zc,
+          df = df,
+          time_pick = NULL,
+          axis_detection_mode = "named"
+        ))
       }
 
-      return(list(time_col = tc, x_col = xc, y_col = yc, z_col = zc, df = df, time_pick = NULL))
+      # incomplete named detection -> fall back carefully
+      best <- pick_time_col(df, seq_along(df))
+      if (!is.na(best$idx)) tc <- nms[best$idx]
+
+      ex <- if (!is.na(best$idx)) best$idx else integer()
+      xyz_idx <- pick_xyz_cols(df, exclude_idx = ex)
+
+      if (!is.null(xyz_idx)) {
+        xyz_idx <- sort(xyz_idx)  # preserve source column order
+        cn <- nms[xyz_idx]
+        xc <- cn[1]
+        yc <- cn[2]
+        zc <- cn[3]
+
+        add_report(paste(
+          "Axis labels were not robustly identified from names.",
+          "UA inferred the 3-axis set from numeric structure and assigned X/Y/Z by source column order.",
+          sprintf("Chosen columns: X=%s, Y=%s, Z=%s.", xc, yc, zc),
+          "Verify this mapping if exact axis identity matters."
+        ))
+
+        return(list(
+          time_col = tc,
+          x_col = xc,
+          y_col = yc,
+          z_col = zc,
+          df = df,
+          time_pick = best,
+          axis_detection_mode = "guessed_source_order"
+        ))
+      }
+
+      return(list(
+        time_col = tc,
+        x_col = xc,
+        y_col = yc,
+        z_col = zc,
+        df = df,
+        time_pick = best,
+        axis_detection_mode = "partial"
+      ))
     }
 
+    # ------------------------------------------------------------
+    # 3) No useful names at all -> detect time + axis triad structurally
+    # ------------------------------------------------------------
     best <- pick_time_col(df, seq_along(df))
     if (is.na(best$idx)) {
-      stop("GENERIC loader could not detect a credible time column.\nTip: pass time_col explicitly.")
+      stop("GENERIC loader could not detect a credible time column.\n",
+           "Tip: pass time_col explicitly.")
     }
 
     xyz_idx <- pick_xyz_cols(df, exclude_idx = best$idx)
     if (is.null(xyz_idx) || length(xyz_idx) != 3) {
-      stop("GENERIC loader detected time column but could not detect 3 numeric axis columns.\nTip: pass x_col/y_col/z_col explicitly.")
+      stop("GENERIC loader detected time column but could not detect 3 numeric axis columns.\n",
+           "Tip: pass x_col/y_col/z_col explicitly.")
     }
+
+    xyz_idx <- sort(xyz_idx)  # preserve file/source order
+    xc <- names(df)[xyz_idx[1]]
+    yc <- names(df)[xyz_idx[2]]
+    zc <- names(df)[xyz_idx[3]]
+
+    add_report(paste(
+      "Axis labels were not robustly identified from names.",
+      "UA inferred the 3-axis set from numeric structure and assigned X/Y/Z by source column order.",
+      sprintf("Chosen columns: X=%s, Y=%s, Z=%s.", xc, yc, zc),
+      "Verify this mapping if exact axis identity matters."
+    ))
 
     list(
       time_col = names(df)[best$idx],
-      x_col = names(df)[xyz_idx[1]],
-      y_col = names(df)[xyz_idx[2]],
-      z_col = names(df)[xyz_idx[3]],
+      x_col = xc,
+      y_col = yc,
+      z_col = zc,
       df = df,
-      time_pick = best
+      time_pick = best,
+      axis_detection_mode = "guessed_source_order"
     )
   }
 
@@ -1323,8 +1398,10 @@ read_and_calibrate_generic <- function(file_path,
   }
 
   add_report(sprintf(
-    "Columns selected: time=%s, X=%s, Y=%s, Z=%s. Rows kept after filtering=%d.",
-    tc, xc, yc, zc, nrow(raw)
+    "Columns selected: time=%s, X=%s, Y=%s, Z=%s. Axis detection mode=%s. Rows kept after filtering=%d.",
+    tc, xc, yc, zc,
+    det$axis_detection_mode %||% "unknown",
+    nrow(raw)
   ))
   add_report(sprintf(
     "Timeline span after parsing (compute tz): first=%s ; last=%s",

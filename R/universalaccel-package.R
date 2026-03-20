@@ -46,10 +46,10 @@
 #' @seealso
 #' \code{\link{accel_summaries}} for batch metric computation from raw files.
 #'
-#' @docType package
 #' @name universalaccel
+#' @keywords internal
 #'
 #' @importFrom dplyr %>%
 #' @importFrom lubridate floor_date
 #' @importFrom readr write_csv
-NULL
+"_PACKAGE"
