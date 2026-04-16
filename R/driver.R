@@ -57,14 +57,21 @@ accel_summaries <- function(device, data_folder, output_folder,
     suppressWarnings(as.POSIXct(x, origin = "1970-01-01", tz = "UTC"))
   }
 
-  format_time_in_tz <- function(x, tz_out, fmt = "%Y-%m-%d %H:%M:%OS3") {
+  format_time_in_tz <- function(x, tz_out) {
     x <- force_posix_time(x)
     if (!length(x)) return(character())
+
     out <- rep(NA_character_, length(x))
     ok <- !is.na(x)
+
     if (any(ok)) {
-      out[ok] <- format(lubridate::with_tz(x[ok], tzone = tz_out), format = fmt, tz = tz_out)
+      out[ok] <- format(
+        lubridate::with_tz(x[ok], tzone = tz_out),
+        format = "%Y-%m-%dT%H:%M:%OS3",
+        tz = tz_out
+      )
     }
+
     out
   }
 

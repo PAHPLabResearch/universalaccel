@@ -23,6 +23,9 @@ read_and_calibrate_axivity <- function(file_path,
                                        trim_edge_seconds = 60,
                                        verbose = FALSE) {
 
+  tz_missing <- missing(tz)
+  tz_supplied <- !tz_missing && is.character(tz) && length(tz) == 1 && nzchar(tz)
+
   if (!is.logical(autocalibrate) || length(autocalibrate) != 1 || is.na(autocalibrate)) {
     stop("`autocalibrate` must be TRUE or FALSE.")
   }
@@ -360,7 +363,9 @@ read_and_calibrate_axivity <- function(file_path,
         filename = path,
         start = 0,
         end = 0,
-        progressBar = FALSE
+        progressBar = FALSE,
+        desiredtz = tz_use,
+        configtz = tz_use
       ),
       error = function(e) {
         stop("GGIRread header read failed for file '", basename(path),
@@ -381,8 +386,10 @@ read_and_calibrate_axivity <- function(file_path,
         filename = path,
         start = 0,
         end = as.integer(hdr$blocks),
-        header = hdr,
-        progressBar = FALSE
+        progressBar = FALSE,
+        desiredtz = tz_use,
+        configtz = tz_use,
+        header = hdr
       ),
       error = function(e) {
         stop("GGIRread full read failed for file '", basename(path),
@@ -396,6 +403,13 @@ read_and_calibrate_axivity <- function(file_path,
     }
 
     add_report(sprintf("GGIRread rows returned: %d", nrow(dat)))
+    add_report(sprintf(
+      paste0(
+        "GGIRread was called with desiredtz='%s' and configtz='%s'. ",
+        "Native CWA timestamps were decoded and returned using explicit timezone arguments."
+      ),
+      tz_use, tz_use
+    ))
 
     names(dat) <- normalize_names(names(dat))
 
@@ -474,6 +488,14 @@ read_and_calibrate_axivity <- function(file_path,
 
     raw <- read_resampled_csv_native(file_path, tz_use = tz)
 
+    add_report(sprintf(
+      paste0(
+        "Resampled Axivity CSV timestamps were interpreted as naive clock times in tz='%s'. ",
+        "No timezone conversion was applied during CSV parsing."
+      ),
+      tz
+    ))
+
     if (!nrow(raw)) stop("No samples after Axivity CSV read: ", basename(file_path))
 
     calibration_attempted <- FALSE
@@ -488,7 +510,7 @@ read_and_calibrate_axivity <- function(file_path,
   } else if (ext == "cwa") {
     add_report("Axivity CWA branch selected.")
     add_report("Axivity CWA is treated as raw/uncalibrated input.")
-    add_report("CWA read path uses GGIRread::readAxivity().")
+    add_report("CWA read path uses GGIRread::readAxivity() with explicit timezone arguments.")
 
     raw <- read_cwa_native(file_path, tz_use = tz)
 
@@ -713,11 +735,12 @@ read_and_calibrate_axivity <- function(file_path,
 
   spec <- list(
     model = model,
-    source_tz_detected = TRUE,
-    source_tz = tz,
+    source_tz_detected = isTRUE(ext == "cwa"),
+    source_tz = if (ext == "cwa") tz else if (isTRUE(tz_supplied)) tz else NA_character_,
+    source_tz_assumed = if (ext == "csv") tz else NA_character_,
     compute_tz = tz,
     output_tz = tz,
-    tz_rule = "compute_in_source_tz",
+    tz_rule = if (ext == "cwa") "ggirread_explicit_configtz_and_desiredtz" else "interpret_naive_clock_time_in_tz",
     grid_action = grid_action,
     regularized_for_uniformity = regularized_for_uniformity,
     calibration_input_provenance = calibration_input_provenance,
