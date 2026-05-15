@@ -46,6 +46,12 @@ ua_run_end_to_end <- function(in_path,
 
   wants_output <- function(x) x %in% outputs
 
+  is_ndw_location <- function(location) {
+    tolower(trimws(as.character(location))) %in% c(
+      "ndw", "ndwrist", "non_dom_wrist", "non-dominant wrist", "non.dom.wrist"
+    )
+  }
+
   ua_write_csv <- function(DT, path) {
     dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
     if (file.exists(path) && !overwrite) {
@@ -635,6 +641,8 @@ ua_run_end_to_end <- function(in_path,
 
     epoch_sec <- ua_pick_epoch(DT)
     ref_epoch_ok <- epoch_sec %in% c(5L, 60L)
+    nhanes_reference_eligible <- is_ndw_location(location)
+
 
     has_any_age <- any(is.finite(DT$age))
     has_complete_age <- all(is.finite(DT$age))
@@ -701,12 +709,27 @@ ua_run_end_to_end <- function(in_path,
     need_all_daily <- any(vapply(c("output2","output5","output6"), wants_output, logical(1)))
 
     if (need_all_daily) {
+
       if (!ref_epoch_ok) {
-        msg_ref <- sprintf("skipped: epoch_sec=%s is not supported for NHANES/reference-based outputs (requires 5 or 60)", epoch_sec)
+        msg_ref <- sprintf(
+          "skipped: epoch_sec=%s is not supported for IG/Volume or NHANES/reference-based outputs (requires 5 or 60)",
+          epoch_sec
+        )
         if (wants_output("output2")) status$output2 <- list(ok = TRUE, path = NA_character_, msg = msg_ref)
         if (wants_output("output5")) status$output5 <- list(ok = TRUE, path = NA_character_, msg = msg_ref)
         if (wants_output("output6")) status$output6 <- list(ok = TRUE, path = NA_character_, msg = msg_ref)
+
       } else {
+
+        if (!nhanes_reference_eligible) {
+          msg_loc <- sprintf(
+            "skipped: NHANES-referenced outputs are currently supported only for non-dominant wrist data; location='%s'",
+            location
+          )
+          if (wants_output("output5")) status$output5 <- list(ok = TRUE, path = NA_character_, msg = msg_loc)
+          if (wants_output("output6")) status$output6 <- list(ok = TRUE, path = NA_character_, msg = msg_loc)
+        }
+
         DT_ref <- copy(DT)
 
         if (all(is.na(DT_ref$sex) | !nzchar(DT_ref$sex))) {
@@ -716,16 +739,21 @@ ua_run_end_to_end <- function(in_path,
         }
 
         DT_ref[, category := vapply(age, ua_infer_category, character(1))]
+
         demo_id_ref <- DT_ref[, .(
           sex      = sex[1],
           age      = age[1],
           category = category[1]
         ), by = .(id)]
+
         demo_id_ref[, sex := as.character(sex)]
         demo_id_ref[, category_key := get_category_key(category, sex)]
 
-        if (is.null(CW)) CW <- normalize_crosswalk(ref_metrics_crosswalks, epoch_keep = epoch_sec)
-        if (is.null(LUT)) LUT <- build_zone_LUTs_for_assignment(CW)
+        # Only needed for Output5/6, but harmless to build only when eligible/requested
+        if (nhanes_reference_eligible && any(vapply(c("output5","output6"), wants_output, logical(1)))) {
+          if (is.null(CW)) CW <- normalize_crosswalk(ref_metrics_crosswalks, epoch_keep = epoch_sec)
+          if (is.null(LUT)) LUT <- build_zone_LUTs_for_assignment(CW)
+        }
 
         bins <- as.data.table(ua_assign_bins(
           DT        = DT_ref,
@@ -747,10 +775,14 @@ ua_run_end_to_end <- function(in_path,
         bins[, metric := canon_metric(metric)]
         bins[, anchor := canon_anchor(metric)]
 
-        bins[, intensity_zone_raw := {
-          zdt <- get_zones_for_group(LUT, anchor[1], epoch_sec[1], category_key[1])
-          if (is.null(zdt) || !nrow(zdt)) rep(NA_character_, .N) else assign_bands_from_zones(midpoint, zdt)
-        }, by = .(id, day, metric, epoch_sec, anchor, category_key)]
+        if (nhanes_reference_eligible && any(vapply(c("output5","output6"), wants_output, logical(1)))) {
+          bins[, intensity_zone_raw := {
+            zdt <- get_zones_for_group(LUT, anchor[1], epoch_sec[1], category_key[1])
+            if (is.null(zdt) || !nrow(zdt)) rep(NA_character_, .N) else assign_bands_from_zones(midpoint, zdt)
+          }, by = .(id, day, metric, epoch_sec, anchor, category_key)]
+        } else {
+          bins[, intensity_zone_raw := NA_character_]
+        }
 
         all_daily <- bins[, .(
           observed_total_volume_min = sum(time_bin_min, na.rm = TRUE),
@@ -770,7 +802,6 @@ ua_run_end_to_end <- function(in_path,
         all_daily[, anchor := canon_anchor(metric)]
       }
     }
-
     # -----------------------------
     # Output2: IG & Volume
     # -----------------------------
@@ -791,7 +822,16 @@ ua_run_end_to_end <- function(in_path,
     # Output5: Daily zone summary using NHANES anchor zones + equated NHANES references
     # -----------------------------
     if (wants_output("output5")) {
-      if (!ref_epoch_ok) {
+      if (!nhanes_reference_eligible) {
+        status$output5 <- list(
+          ok = TRUE,
+          path = NA_character_,
+          msg = sprintf(
+            "skipped: NHANES-referenced Output5 is currently available only for non-dominant wrist data; location='%s'",
+            location
+          )
+        )
+      } else if (!ref_epoch_ok) {
         # already handled
       } else if (!has_any_age) {
         status$output5 <- list(ok = TRUE, path = NA_character_, msg = "skipped: age column missing; Output5 requires age")
@@ -892,7 +932,16 @@ ua_run_end_to_end <- function(in_path,
     # Output6: IG & Volume percentiles in NHANES
     # -----------------------------
     if (wants_output("output6")) {
-      if (!ref_epoch_ok) {
+      if (!nhanes_reference_eligible) {
+        status$output6 <- list(
+          ok = TRUE,
+          path = NA_character_,
+          msg = sprintf(
+            "skipped: NHANES percentile comparison is currently available only for non-dominant wrist data; location='%s'",
+            location
+          )
+        )
+      } else if (!ref_epoch_ok) {
         # already handled
       } else if (!has_any_age) {
         status$output6 <- list(ok = TRUE, path = NA_character_, msg = "skipped: age column missing; Output6 requires age")
@@ -1002,10 +1051,10 @@ ua_run_end_to_end <- function(in_path,
         "WHAT THIS TOOL DID",
         "============================================================",
         "  1) Binned each day into intensity levels (minutes per bin).",
-        "  2) Computed daily and weekly IG & Volume summaries.",
+        "  2) Computed daily and weekly IG & Volume summaries using location-specific bin edges.",
         "  3) Computed MX metrics (daily and weekly outputs).",
-        "  4) Added NHANES reference values for daily zone-summary output.",
-        "  5) Added percentile-based NHANES comparison output for average acceleration and intensity gradient.",
+        "  4) Added NHANES reference values for daily zone-summary output when location is non-dominant wrist.",
+        "  5) Added percentile-based NHANES comparison output for average acceleration and intensity gradient when location is non-dominant wrist.",
         "",
         "Important limitations:",
         "  • The file must contain a single epoch length.",
@@ -1030,6 +1079,8 @@ ua_run_end_to_end <- function(in_path,
         "  • observed_mean_intensity   : time-weighted mean intensity in native units.",
         "  • observed_ig               : intensity gradient derived from the observed distribution.",
         "  • No age/sex/category columns are carried here.",
+        "  • For non-dominant wrist, bin edges use the NHANES-derived reference.",
+        "  • For other supported locations, bin edges use location-specific references generated using the same harmonization framework.",
         "",
         "OUTPUT 3 (DAILY MX):",
         "  • Each row is one person × day × metric × MX target.",
