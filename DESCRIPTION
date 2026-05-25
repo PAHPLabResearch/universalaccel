@@ -1,7 +1,7 @@
 Package: universalaccel
 Type: Package
 Title: Universal Accelerometer Summary Metrics
-Version: 0.1.2
+Version: 0.2.0
 Authors@R:
     person("Jimmy Duhamahoro", email = "jduhamah@iastate.edu", role = c("aut", "cre"))
 Description: A fully reproducible workflow for importing and autocalibrating raw accelerometer data from ActiGraph, Axivity, and GENEActiv devices. 
