@@ -54,4 +54,6 @@ ua_run(
 
 ## Citation
 
+Duhamahoro, J., Hibbing, P. R., Berg, E., & Welk, G. J. (2026). A Harmonized Intensity-Gradient Framework for 24-Hr Movement Interpretation Across Raw Acceleration Summary Metrics. https://doi.org/10.1123/jmpb.2026-0001
+
 Duhamahoro, J., Hibbing, P. R., Lamoureux, N. R., Berg, E., & Welk, G. J. (2026). Do Movement Summary Metrics Produce Comparable Outputs Across Different Accelerometer Brands in Free Living? Journal for the Measurement of Physical Behaviour, 9(1). https://doi.org/10.1123/jmpb.2025-0024
